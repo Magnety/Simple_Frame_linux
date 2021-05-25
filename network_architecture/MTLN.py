@@ -212,6 +212,6 @@ class MTLN3D(nn.Module):
         class_predict1 = class_predict1.view(class_predict1.size(0), -1)
         class_predict = self.fc(class_predict1)
 
-        return seg_fuse0, seg_fuse1, seg_predict, class_predict
+        return class_predict
         # return predict_down11, predict_down22,predict_down32, predict_focus1, predict_focus2, predict_focus3,predict
         # return seg_predict

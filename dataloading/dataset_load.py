@@ -377,6 +377,7 @@ class DataLoader3D(SlimDataLoaderBase):
         data = np.vstack(data)
         seg = np.vstack(seg)
         class_label = np.vstack(class_label)
+        feature = np.vstack(feature)
         #print("/////////////return1////////////////////////")
 
         return {'data':data, 'seg':seg, 'class_label':class_label, 'feature':feature,'properties':case_properties, 'keys': selected_keys}
