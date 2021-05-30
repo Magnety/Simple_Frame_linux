@@ -1,0 +1,2 @@
+class_label:tensor(0.)
+class_predict:tensor([0])

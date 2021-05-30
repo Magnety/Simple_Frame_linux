@@ -405,8 +405,8 @@ class GenericPreprocessor(object):
             class_locs[c] = selected
             print(c, target_num_samples)
         properties['class_locations'] = class_locs
-        print("////////all_data////////////")
-        print(all_data[-1].shape)
+        #print("////////all_data////////////")
+        #print(all_data[-1].shape)
         properties['connect_mask_box'] = self.connect_mask_box(image=all_data[-1],for_which_classes=all_classes)
         print("saving: ",  output_folder_stage+"/"+ "%s.npz" % case_identifier)
         np.savez_compressed( output_folder_stage+"/"+"%s.npz" % case_identifier ,
@@ -440,8 +440,8 @@ class GenericPreprocessor(object):
         # we need to know which classes are present in this dataset so that we can precompute where these classes are
         # located. This is needed for oversampling foreground
         all_classes = load_pickle( input_folder_with_cropped_npz+"/"+ 'dataset_properties.pkl') ['all_classes']
-        print("//////////all classes//////////")
-        print(all_classes)
+        #print("//////////all classes//////////")
+        #print(all_classes)
         for i in range(num_stages):
             all_args = []
             output_folder_stage =  output_folder+"/"+ data_identifier + "_stage%d" % i

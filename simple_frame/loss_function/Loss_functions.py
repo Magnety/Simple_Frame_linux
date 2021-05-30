@@ -5,7 +5,13 @@ import torch.nn.functional as F
 from torch.autograd import Variable
 
 def softmax_helper(x):
+    """print("///////////x////////////")
+    print(x)
+    print("/////////x.size/////////")
+    print(x.size())
+    print("/////////len x.size/////////")"""
 
+    #print(len(x.size()))
     rpt = [1 for _ in range(len(x.size()))]
     rpt[1] = x.size(1)
     x_max = x.max(1, keepdim=True)[0].repeat(*rpt)

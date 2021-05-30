@@ -23,7 +23,7 @@ default_trainer = "cls_trainer"
 default_cascade_trainer = "tuTrainerV2CascadeFullRes"
 
 
-base = "G:/Simple_Frame_data_raw_base"
+base = "/home/ubuntu/liuyiyao/Simple_Frame_data_raw_base"
 preprocessing_output_dir =base+"/preprocessed"
 network_training_output_dir_base =base+"/trained_models"
 

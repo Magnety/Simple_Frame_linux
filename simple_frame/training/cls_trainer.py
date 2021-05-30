@@ -6,7 +6,7 @@ import shutil
 from typing import Tuple, List
 from simple_frame.network_architecture.neural_network import SegmentationNetwork
 from simple_frame.network_architecture.neural_network import ClassficationNetwork
-
+from simple_frame.loss_function.focal_loss import focal_loss
 from multiprocessing import Pool
 from time import sleep
 from collections import OrderedDict
@@ -43,7 +43,6 @@ class Trainer(nn.Module):
         self.log_file = self.use_mask_for_norm = None
         self.batch_dice = False
         self.seg_loss = JI_and_Focal_loss({'batch_dice': self.batch_dice, 'smooth': 1e-5, 'do_bg': False, 'square': False})
-        self.class_loss = torch.nn.CrossEntropyLoss().cuda()
         self.aw1 = AutomaticWeightedLoss(1)
         self.fp16 = False
         self.plans_file = data_root+"/Plansv2.1_plans_3D.pkl"
@@ -58,14 +57,14 @@ class Trainer(nn.Module):
             self.load_plans_file()
 
             self.process_plans(self.plans)
-            self.batch_size = 8
+            self.batch_size = 20
             self.patch_size = np.array([32,128,128]).astype(int)
             self.do_data_augmentation = True
             self.num_classes = 2
             self.setup_data_aug_params()
             self.initial_lr = 5e-3
             self.lr_scheduler_eps = 1e-3
-            self.lr_scheduler_patience = 10
+            self.lr_scheduler_patience = 5
             self.weight_decay = 2e-5
 
             self.oversample_foreground_percent = 0.33
@@ -79,7 +78,7 @@ class Trainer(nn.Module):
             self.train_loss_MA_eps = 5e-4  # new MA must be at least this much better (smaller)
             self.save_every = 50
             self.save_latest_only = True
-            self.max_num_epochs = 1000
+            self.max_num_epochs = 500
             self.num_batches_per_epoch = 300
             self.num_val_batches_per_epoch = 100
             self.also_val_in_tr_mode = False
@@ -126,10 +125,21 @@ class Trainer(nn.Module):
             self.network = VNet_class(num_classes=self.num_classes, deep_supervision=True).cuda()
             self.optimizer = torch.optim.Adam(self.network.parameters(), self.initial_lr, weight_decay=self.weight_decay,
                                               amsgrad=True)
-            self.lr_scheduler = lr_scheduler.ReduceLROnPlateau(self.optimizer, mode='min', factor=0.2,
+            self.lr_scheduler = lr_scheduler.ReduceLROnPlateau(self.optimizer, mode='min', factor=0.8,
                                                                patience=self.lr_scheduler_patience,
                                                                verbose=True, threshold=self.lr_scheduler_eps,
                                                                threshold_mode="abs")
+            total = 0
+            positive = 0
+            for k in self.dataset_tr.keys():
+                class_path = self.fc_path + '/classesTr'
+                class_source = open(class_path + '/' + k + '.txt')  # 打开源文件
+                indate = class_source.read()  # 显示所有源文件内容
+                if int(indate)==1:
+                    positive+=1
+                total+=1
+                positive_weight = positive / total
+            self.class_loss = focal_loss(alpha=positive_weight)
         else:
             self.print_to_log_file('self.was_initialized is True, not running self.initialize again')
         self.was_initialized = True
@@ -360,11 +370,14 @@ class Trainer(nn.Module):
             feature = torch.from_numpy(feature).float()
         data = data.cuda(non_blocking=True)
         target = target.cuda(non_blocking=True)
+
         class_target = class_target.cuda(non_blocking=True)
+
         feature = feature.cuda(non_blocking=True)
         self.optimizer.zero_grad()
         output = self.network(data,feature)
-
+        #print("///////////output///////////")
+        #print(output)
         #output = self.network(data)
         del data
 
@@ -372,7 +385,7 @@ class Trainer(nn.Module):
 
         l = self.aw1.cuda()( l10)
 
-        l = l10
+
         if run_online_evaluation:
             #self.run_online_evaluation(output[2], output[3], target, class_target)
             self.run_online_evaluation_onlycls(output,class_target)
@@ -463,7 +476,7 @@ class Trainer(nn.Module):
 
             if isinstance(self.lr_scheduler, lr_scheduler.ReduceLROnPlateau):
                 # lr scheduler is updated with moving average val loss. should be more robust
-                self.lr_scheduler.step(self.train_loss_MA)
+                self.lr_scheduler.step(self.val_eval_criterion_MA)
             else:
                 self.lr_scheduler.step(self.epoch + 1)
         self.print_to_log_file("lr is now (scheduler) %s" % str(self.optimizer.param_groups[0]['lr']))
@@ -631,12 +644,12 @@ class Trainer(nn.Module):
         # metrics
 
         self.plot_progress()
+        self.update_eval_criterion_MA()
 
         self.maybe_update_lr()
 
         self.maybe_save_checkpoint()
 
-        self.update_eval_criterion_MA()
 
         continue_training = self.manage_patience()
         return continue_training
@@ -644,6 +657,7 @@ class Trainer(nn.Module):
     def run_online_evaluation_onlycls(self, output_class, target_class):
         with torch.no_grad():
             ###classification
+            #print("/////////////output_class.shape///////////////:",output_class.shape)
             num_classes0 = output_class.shape[1]
             output_class_softmax = softmax_helper(output_class)
             output_class = output_class_softmax.argmax(1)
@@ -727,7 +741,7 @@ class Trainer(nn.Module):
                 break
 
             self.epoch += 1
-            if self.epoch % 5 == 0:
+            if self.epoch % 20 == 0:
                 self.save_checkpoint(join(self.output_folder, 'epoch_{}_model_best.model'.format(self.epoch)))
             self.print_to_log_file("This epoch took %f s\n" % (epoch_end_time - epoch_start_time))
 
@@ -741,7 +755,7 @@ class Trainer(nn.Module):
     def validate(self, do_mirroring: bool = True, use_sliding_window: bool = True,
                  step_size: float = 0.5, save_softmax: bool = True, use_gaussian: bool = True, overwrite: bool = True,
                  validation_folder_name: str = 'validation_raw', debug: bool = False, all_in_gpu: bool = False,
-                 segmentation_export_kwargs: dict = None, run_postprocessing_on_folds: bool = True):
+                 segmentation_export_kwargs: dict = None):
         """
         We need to wrap this because we need to enforce self.network.do_ds = False for prediction
         """
@@ -798,108 +812,73 @@ class Trainer(nn.Module):
 
         export_pool = Pool(4)
         results = []
+        cls_tp = 0
+        cls_fp = 0
+        cls_tn = 0
+        cls_fn = 0
 
         for k in self.dataset_val.keys():
-            properties = load_pickle(self.dataset[k]['properties_file'])
+            properties = self.dataset[k]['properties']
             fname = properties['list_of_data_files'][0].split("/")[-1][:-12]
-            if overwrite or (not isfile(output_folder + "/" + fname + ".nii.gz")) or \
-                    (save_softmax and not isfile(output_folder + "/" + fname + ".npz")):
-                data = np.load(self.dataset[k]['data_file'])['data']
-                feature_path = self.fc_path+'/featuresTr'
-                class_path = self.fc_path+'/classesTr'
-                feature = np.load(feature_path+ '/' + k + '.npy')
-                class_source = open(class_path + '/' + k + '.txt')  # 打开源文件
-                indate = class_source.read()  # 显示所有源文件内容
-                class_lyy = np.array(float(indate))
-                connect_mask_box = properties['connect_mask_box']
-                print(k, data.shape)
-                data[-1][data[-1] == -1] = 0
-                softmax_pred = self.predict_preprocessed_data_return_cls_and_softmax(data[:-1],feature,connect_mask_box,
-                                                                                     do_mirroring=do_mirroring,
-                                                                                     mirror_axes=mirror_axes,
-                                                                                     use_sliding_window=use_sliding_window,
-                                                                                     step_size=step_size,
-                                                                                     use_gaussian=use_gaussian,
-                                                                                     all_in_gpu=all_in_gpu,
-                                                                                     mixed_precision=self.fp16)[1]
 
-                softmax_pred = softmax_pred.transpose([0] + [i + 1 for i in self.transpose_backward])
+            data = np.load(self.dataset[k]['data_file'])['data']
+            feature_path = self.fc_path+'/featuresTr'
+            class_path = self.fc_path+'/classesTr'
+            feature = np.load(feature_path+ '/' + k + '.npy')
+            class_source = open(class_path + '/' + k + '.txt')  # 打开源文件
+            indate = class_source.read()  # 显示所有源文件内容
+            class_target= np.array(float(indate))
+            if not isinstance(class_target, torch.Tensor):
+                class_target = torch.from_numpy(class_target).float()
 
-                if save_softmax:
-                    softmax_fname = output_folder + "/" + fname + ".npz"
+
+            if not isinstance(feature, torch.Tensor):
+                feature = torch.from_numpy(feature).float()
+            feature = feature.cuda(non_blocking=True)
+            feature= feature.unsqueeze(dim=0)
+            connect_mask_box = properties['connect_mask_box']
+            #print(k, data.shape)
+            data[-1][data[-1] == -1] = 0
+            pred = self.predict_preprocessed_data_return_cls_and_softmax(data[:-1],feature,connect_mask_box,
+                                                                                 do_mirroring=do_mirroring,
+                                                                                 mirror_axes=mirror_axes,
+                                                                                 use_sliding_window=use_sliding_window,
+                                                                                 step_size=step_size,
+                                                                                 use_gaussian=use_gaussian,
+                                                                                 all_in_gpu=all_in_gpu,
+                                                                                 mixed_precision=self.fp16)
+            if not isinstance(pred, torch.Tensor):
+                pred = torch.from_numpy(pred).float()
+            softmax_pred = softmax_helper(pred)
+            #output_class = output_class_softmax.argmax(1)
+            """print("////////pred.shape//////")
+            print(pred)
+            print("////////softmax_pred//////")
+            print(softmax_pred)"""
+            output_class = softmax_pred.argmax(1)
+            """ print("/////////class target//////////")
+            print(class_target)
+            print("////////output_class//////")
+            print(output_class)"""
+            if output_class == class_target:
+                if output_class == 0:
+                    cls_tn+=1
                 else:
-                    softmax_fname = None
-
-                """There is a problem with python process communication that prevents us from communicating obejcts
-                larger than 2 GB between processes (basically when the length of the pickle string that will be sent is
-                communicated by the multiprocessing.Pipe object then the placeholder (\%i I think) does not allow for long
-                enough strings (lol). This could be fixed by changing i to l (for long) but that would require manually
-                patching system python code. We circumvent that problem here by saving softmax_pred to a npy file that will
-                then be read (and finally deleted) by the Process. save_segmentation_nifti_from_softmax can take either
-                filename or np.ndarray and will handle this automatically"""
-                if np.prod(softmax_pred.shape) > (2e9 / 4 * 0.85):  # *0.85 just to be save
-                    np.save(output_folder + "/" + fname + ".npy", softmax_pred)
-                    softmax_pred = output_folder + "/" + fname + ".npy"
-
-                results.append(export_pool.starmap_async(save_segmentation_nifti_from_softmax,
-                                                         ((softmax_pred, output_folder + "/" + fname + ".nii.gz",
-                                                           properties, interpolation_order, self.regions_class_order,
-                                                           None, None,
-                                                           softmax_fname, None, force_separate_z,
-                                                           interpolation_order_z),
-                                                          )
-                                                         )
-                               )
-
-            pred_gt_tuples.append([output_folder + "/" + fname + ".nii.gz",
-                                   self.gt_niftis_folder + "/" + fname + ".nii.gz"])
-
-        _ = [i.get() for i in results]
-        self.print_to_log_file("finished prediction")
-
-        # evaluate raw predictions
-        self.print_to_log_file("evaluation of raw predictions")
-        task = self.dataset_directory.split("/")[-1]
-        job_name = self.experiment_name
-        _ = aggregate_scores(pred_gt_tuples, labels=list(range(self.num_classes)),
-                             json_output_file=output_folder + "/" + "summary.json",
-                             json_name=job_name + " val tiled %s" % (str(use_sliding_window)),
-                             json_author="Fabian",
-                             json_task=task, num_threads=4)
-
-        if run_postprocessing_on_folds:
-            # in the old simple_frame we would stop here. Now we add a postprocessing. This postprocessing can remove everything
-            # except the largest connected component for each class. To see if this improves results, we do this for all
-            # classes and then rerun the evaluation. Those classes for which this resulted in an improved dice score will
-            # have this applied during inference as well
-            self.print_to_log_file("determining postprocessing")
-            determine_postprocessing(self.output_folder, self.gt_niftis_folder, validation_folder_name,
-                                     final_subf_name=validation_folder_name + "_postprocessed", debug=debug)
-            # after this the final predictions for the vlaidation set can be found in validation_folder_name_base + "_postprocessed"
-            # They are always in that folder, even if no postprocessing as applied!
-
-        # detemining postprocesing on a per-fold basis may be OK for this fold but what if another fold finds another
-        # postprocesing to be better? In this case we need to consolidate. At the time the consolidation is going to be
-        # done we won't know what self.gt_niftis_folder was, so now we copy all the niftis into a separate folder to
-        # be used later
-        gt_nifti_folder = self.output_folder_base + "/" + "gt_niftis"
-        if not os.path.isdir(gt_nifti_folder):
-            os.makedirs(gt_nifti_folder)
-        for f in subfiles(self.gt_niftis_folder, suffix=".nii.gz"):
-            success = False
-            attempts = 0
-            e = None
-            while not success and attempts < 10:
-                try:
-                    shutil.copy(f, gt_nifti_folder)
-                    success = True
-                except OSError as e:
-                    attempts += 1
-                    sleep(1)
-            if not success:
-                print("Could not copy gt nifti file %s into folder %s" % (f, gt_nifti_folder))
-                if e is not None:
-                    raise e
+                    cls_tp+=1
+            else:
+                if output_class ==0:
+                    cls_fn+=1
+                else:
+                    cls_fp+=1
+            target = open(output_folder + '/%s.txt'%k , 'w')  # 打开目的文件
+            target.write("class_label:"+str(class_target)+"\nclass_predict:"+str(output_class))
+        acc = (cls_tp+cls_tn)/(cls_fp+cls_fn+cls_tp+cls_tn+1e-8)
+        rec = (cls_tp)/(cls_tp+cls_fn+1e-8)
+        pre = (cls_tp)/(cls_tp+cls_fp+1e-8)
+        f1 = (rec*pre*2)/(rec+pre+1e-8)
+        target = open(output_folder + '/metrics.txt', 'w')  # 打开目的文件
+        target.write("acc:"+ str(acc)+"\nrec:"+ str(rec)+"\npre:"+ str(pre)+ "\nf1:"+ str(f1))
+                #softmax_pred = softmax_pred.transpose([0] + [i + 1 for i in self.transpose_backward])
 
         self.network.train(current_mode)
 
@@ -978,9 +957,11 @@ class Trainer(nn.Module):
         self.network.eval()
         ret = self.network.predict_3D(data,feature,connect_mask_box, do_mirroring=do_mirroring, mirror_axes=mirror_axes,
                                       use_sliding_window=use_sliding_window, step_size=step_size,
-                                      patch_size=self.patch_size, regions_class_order=self.regions_class_order,
+                                      patch_size=self.patch_size,
                                       use_gaussian=use_gaussian, pad_border_mode=pad_border_mode,
                                       pad_kwargs=pad_kwargs, all_in_gpu=all_in_gpu, verbose=verbose,
                                       mixed_precision=mixed_precision)
+        """print("///////////ret////////////////")
+        print(ret)"""
         self.network.train(current_mode)
         return ret

@@ -392,18 +392,23 @@ class VNet_class(ClassficationNetwork):
         feature3 = self.ex_feature3(down3)
         feature4 = self.ex_feature4(down4)
 
+        #print("//////////f.shape///////////")
+        #print(f.shape)
+        #print("//////////feature1.shape///////////")
+        #print(feature1.shape)
+        #print("//////////feature2.shape///////////")
+        #print(feature2.shape)
+        feature1 = feature1.view(feature1.size()[0], -1)
+        feature2 = feature2.view(feature2.size()[0], -1)
+
+        feature3 = feature3.view(feature3.size()[0], -1)
+        feature4 = feature4.view(feature4.size()[0], -1)
         """print("//////////f.shape///////////")
         print(f.shape)
         print("//////////feature1.shape///////////")
         print(feature1.shape)
         print("//////////feature2.shape///////////")
         print(feature2.shape)"""
-        feature1 = feature1.view(feature1.size()[0], -1)
-        feature2 = feature2.view(feature2.size()[0], -1)
-
-        feature3 = feature3.view(feature3.size()[0], -1)
-        feature4 = feature4.view(feature4.size()[0], -1)
-
         features = torch.cat((feature1,feature2,feature3,feature4,f),-1)
         features = features.view(features.size()[0],-1)
         #print(features.shape)

@@ -834,7 +834,7 @@ class ClassficationNetwork(NeuralNetwork):
 
     def predict_3D(self, x: np.ndarray,feature,connect_mask_box, do_mirroring: bool, mirror_axes: Tuple[int, ...] = (0, 1, 2),
                    use_sliding_window: bool = False,
-                   step_size: float = 0.5, patch_size: Tuple[int, ...] = None, regions_class_order: Tuple[int, ...] = None,
+                   step_size: float = 0.5, patch_size: Tuple[int, ...] = None,
                    use_gaussian: bool = False, pad_border_mode: str = "constant",
                    pad_kwargs: dict = None, all_in_gpu: bool = False,
                    verbose: bool = True, mixed_precision: bool = True) -> Tuple[np.ndarray, np.ndarray]:
@@ -907,23 +907,24 @@ class ClassficationNetwork(NeuralNetwork):
                 if self.conv_op == nn.Conv3d:
                     if use_sliding_window:
                         res = self._internal_predict_3D_3Dconv_tiled(x,feature,connect_mask_box, step_size, do_mirroring, mirror_axes, patch_size,
-                                                                     regions_class_order, use_gaussian, pad_border_mode,
+                                                                      use_gaussian, pad_border_mode,
                                                                      pad_kwargs=pad_kwargs, all_in_gpu=all_in_gpu,
                                                                      verbose=verbose)
                     else:
-                        res = self._internal_predict_3D_3Dconv(x, patch_size, do_mirroring, mirror_axes, regions_class_order,
+                        res = self._internal_predict_3D_3Dconv(x, patch_size, do_mirroring, mirror_axes,
                                                                pad_border_mode, pad_kwargs=pad_kwargs, verbose=verbose)
                 elif self.conv_op == nn.Conv2d:
                     if use_sliding_window:
                         res = self._internal_predict_3D_2Dconv_tiled(x, patch_size, do_mirroring, mirror_axes, step_size,
-                                                                     regions_class_order, use_gaussian, pad_border_mode,
+                                                                     use_gaussian, pad_border_mode,
                                                                      pad_kwargs, all_in_gpu, False)
                     else:
-                        res = self._internal_predict_3D_2Dconv(x, patch_size, do_mirroring, mirror_axes, regions_class_order,
+                        res = self._internal_predict_3D_2Dconv(x, patch_size, do_mirroring, mirror_axes,
                                                                pad_border_mode, pad_kwargs, all_in_gpu, False)
                 else:
                     raise RuntimeError("Invalid conv op, cannot determine what dimensionality (2d/3d) the network is")
-
+        """print("/////////////////res//////////////")
+        print(res)"""
         return res
 
     def predict_2D(self, x, do_mirroring: bool, mirror_axes: tuple = (0, 1, 2), use_sliding_window: bool = False,
@@ -1043,15 +1044,12 @@ class ClassficationNetwork(NeuralNetwork):
                 actual_step_size = max_step_value / (num_steps[dim] - 1)
             else:
                 actual_step_size = 99999999999  # does not matter because there is only one step at 0
-
             steps_here = [int(np.round(actual_step_size * i)) for i in range(num_steps[dim])]
-
             steps.append(steps_here)
-
         return steps
 
     def _internal_predict_3D_3Dconv_tiled(self, x: np.ndarray,feature,connect_mask_box, step_size: float, do_mirroring: bool, mirror_axes: tuple,
-                                          patch_size: tuple, regions_class_order: tuple, use_gaussian: bool,
+                                          patch_size: tuple, use_gaussian: bool,
                                           pad_border_mode: str, pad_kwargs: dict, all_in_gpu: bool,
                                           verbose: bool) -> Tuple[np.ndarray, np.ndarray]:
         # better safe than sorry
@@ -1131,7 +1129,7 @@ class ClassficationNetwork(NeuralNetwork):
                 add_for_nb_of_preds = np.ones(data.shape[1:], dtype=np.float32)
             aggregated_results = np.zeros([self.num_classes] + list(data.shape[1:]), dtype=np.float32)
             aggregated_nb_of_predictions = np.zeros([self.num_classes] + list(data.shape[1:]), dtype=np.float32)
-
+        first_run = True
         for x in steps[0]:
             lb_x = x
             ub_x = x + patch_size[0]
@@ -1141,50 +1139,39 @@ class ClassficationNetwork(NeuralNetwork):
                 for z in steps[2]:
                     lb_z = z
                     ub_z = z + patch_size[2]
+                    x_center = (lb_x+ub_x)//2
+                    y_center = (lb_y+ub_y)//2
+                    z_center = (lb_z+ub_z)//2
 
-                    predicted_patch = self._internal_maybe_mirror_and_pred_3D(
-                        data[None, :, lb_x:ub_x, lb_y:ub_y, lb_z:ub_z], mirror_axes, do_mirroring,
-                        gaussian_importance_map)[0]
+                    #liuyiyao
+                    #judge if the step_box is in connect_mask_box
+                    for cls_key in connect_mask_box.keys():
+                        for obj_num in range(len(connect_mask_box[cls_key])):
 
-                    if all_in_gpu:
-                        predicted_patch = predicted_patch.half()
-                    else:
-                        predicted_patch = predicted_patch.cpu().numpy()
+                            x_min = connect_mask_box[cls_key][obj_num][0]
+                            x_max = connect_mask_box[cls_key][obj_num][1]
+                            y_min = connect_mask_box[cls_key][obj_num][2]
+                            y_max = connect_mask_box[cls_key][obj_num][3]
+                            z_min = connect_mask_box[cls_key][obj_num][4]
+                            z_max = connect_mask_box[cls_key][obj_num][5]
+                            if (ub_x>x_min and lb_x<x_max) and (ub_y>y_min and lb_y<y_max) and (ub_z>z_min and lb_z<z_max):
 
-                    aggregated_results[:, lb_x:ub_x, lb_y:ub_y, lb_z:ub_z] += predicted_patch
-                    aggregated_nb_of_predictions[:, lb_x:ub_x, lb_y:ub_y, lb_z:ub_z] += add_for_nb_of_preds
+                                predicted_patch = self._internal_maybe_mirror_and_pred_3D(data[None, :, lb_x:ub_x, lb_y:ub_y, lb_z:ub_z], feature,mirror_axes, do_mirroring,gaussian_importance_map)
+                                #print("///////////predict_patch////////////")
+                                #print(predicted_patch)
+                                if all_in_gpu:
+                                    predicted_patch = predicted_patch.half()
+                                else:
+                                    predicted_patch = predicted_patch.cpu().numpy()
+                                if first_run:
+                                    output_result  = predicted_patch
+                                    first_run = False
+                                else:
+                                    output_result = (output_result+predicted_patch)/2
+                                #print("///////////output_result////////////")
+                                #print(output_result)
+        return output_result
 
-        # we reverse the padding here (remeber that we padded the input to be at least as large as the patch size
-        slicer = tuple(
-            [slice(0, aggregated_results.shape[i]) for i in
-             range(len(aggregated_results.shape) - (len(slicer) - 1))] + slicer[1:])
-        aggregated_results = aggregated_results[slicer]
-        aggregated_nb_of_predictions = aggregated_nb_of_predictions[slicer]
-
-        # computing the class_probabilities by dividing the aggregated result with result_numsamples
-        class_probabilities = aggregated_results / aggregated_nb_of_predictions
-
-        if regions_class_order is None:
-            predicted_segmentation = class_probabilities.argmax(0)
-        else:
-            if all_in_gpu:
-                class_probabilities_here = class_probabilities.detach().cpu().numpy()
-            else:
-                class_probabilities_here = class_probabilities
-            predicted_segmentation = np.zeros(class_probabilities_here.shape[1:], dtype=np.float32)
-            for i, c in enumerate(regions_class_order):
-                predicted_segmentation[class_probabilities_here[i] > 0.5] = c
-
-        if all_in_gpu:
-            if verbose: print("copying results to CPU")
-
-            if regions_class_order is None:
-                predicted_segmentation = predicted_segmentation.detach().cpu().numpy()
-
-            class_probabilities = class_probabilities.detach().cpu().numpy()
-
-        if verbose: print("prediction done")
-        return predicted_segmentation, class_probabilities
 
     def _internal_predict_2D_2Dconv(self, x: np.ndarray, min_size: Tuple[int, int], do_mirroring: bool,
                                     mirror_axes: tuple = (0, 1, 2), regions_class_order: tuple = None,
@@ -1245,7 +1232,6 @@ class ClassficationNetwork(NeuralNetwork):
             [slice(0, predicted_probabilities.shape[i]) for i in range(len(predicted_probabilities.shape) -
                                                                        (len(slicer) - 1))] + slicer[1:])
         predicted_probabilities = predicted_probabilities[slicer]
-
         if regions_class_order is None:
             predicted_segmentation = predicted_probabilities.argmax(0)
             predicted_segmentation = predicted_segmentation.detach().cpu().numpy()
@@ -1258,7 +1244,7 @@ class ClassficationNetwork(NeuralNetwork):
 
         return predicted_segmentation, predicted_probabilities
 
-    def _internal_maybe_mirror_and_pred_3D(self, x: Union[np.ndarray, torch.tensor], mirror_axes: tuple,
+    def _internal_maybe_mirror_and_pred_3D(self, x: Union[np.ndarray, torch.tensor], feature,mirror_axes: tuple,
                                            do_mirroring: bool = True,
                                            mult: np.ndarray or torch.tensor = None) -> torch.tensor:
         assert len(x.shape) == 5, 'x must be (b, c, x, y, z)'
@@ -1266,56 +1252,10 @@ class ClassficationNetwork(NeuralNetwork):
         # we now return a cuda tensor! Not numpy array!
 
         x = to_cuda(maybe_to_torch(x), gpu_id=self.get_device())
-        result_torch = torch.zeros([1, self.num_classes] + list(x.shape[2:]),
-                                   dtype=torch.float).cuda(self.get_device(), non_blocking=True)
-
-        if mult is not None:
-            mult = to_cuda(maybe_to_torch(mult), gpu_id=self.get_device())
-
-        if do_mirroring:
-            mirror_idx = 8
-            num_results = 2 ** len(mirror_axes)
-        else:
-            mirror_idx = 1
-            num_results = 1
-
-        for m in range(mirror_idx):
-            if m == 0:
-                pred = self.inference_apply_nonlin(self(x))
-                result_torch += 1 / num_results * pred
-
-            if m == 1 and (2 in mirror_axes):
-                pred = self.inference_apply_nonlin(self(torch.flip(x, (4, ))))
-                result_torch += 1 / num_results * torch.flip(pred, (4,))
-
-            if m == 2 and (1 in mirror_axes):
-                pred = self.inference_apply_nonlin(self(torch.flip(x, (3, ))))
-                result_torch += 1 / num_results * torch.flip(pred, (3,))
-
-            if m == 3 and (2 in mirror_axes) and (1 in mirror_axes):
-                pred = self.inference_apply_nonlin(self(torch.flip(x, (4, 3))))
-                result_torch += 1 / num_results * torch.flip(pred, (4, 3))
-
-            if m == 4 and (0 in mirror_axes):
-                pred = self.inference_apply_nonlin(self(torch.flip(x, (2, ))))
-                result_torch += 1 / num_results * torch.flip(pred, (2,))
-
-            if m == 5 and (0 in mirror_axes) and (2 in mirror_axes):
-                pred = self.inference_apply_nonlin(self(torch.flip(x, (4, 2))))
-                result_torch += 1 / num_results * torch.flip(pred, (4, 2))
-
-            if m == 6 and (0 in mirror_axes) and (1 in mirror_axes):
-                pred = self.inference_apply_nonlin(self(torch.flip(x, (3, 2))))
-                result_torch += 1 / num_results * torch.flip(pred, (3, 2))
-
-            if m == 7 and (0 in mirror_axes) and (1 in mirror_axes) and (2 in mirror_axes):
-                pred = self.inference_apply_nonlin(self(torch.flip(x, (4, 3, 2))))
-                result_torch += 1 / num_results * torch.flip(pred, (4, 3, 2))
-
-        if mult is not None:
-            result_torch[:, :] *= mult
-
-        return result_torch
+        out_result = self(x,feature)
+        #print("////////////out_result///////////")
+        #print(out_result)
+        return out_result
 
     def _internal_maybe_mirror_and_pred_2D(self, x: Union[np.ndarray, torch.tensor], mirror_axes: tuple,
                                            do_mirroring: bool = True,
