@@ -20,9 +20,9 @@ if __name__ == '__main__':
 
     parser.add_argument('--data_root', default='/home/ubuntu/liuyiyao/Simple_Frame_data_raw_base/preprocessed',
                         type=str, help='root directory path of data')
-    parser.add_argument("--valbest", required=False, default=False, help="select the best training weights to test",
+    parser.add_argument("--valbest", required=False, default=True, help="select the best training weights to test",
                         action="store_true")
-    parser.add_argument("-val", "--validation_only", help="use this if you want to only run the validation",
+    parser.add_argument("-val", "--validation_only",default=False, help="use this if you want to only run the validation",
                         action="store_true")
     parser.add_argument("-c", "--continue_training", help="use this if you want to continue a training",
                         action="store_true")
@@ -31,8 +31,8 @@ if __name__ == '__main__':
     parser.add_argument("--npz", required=False, default=False, action="store_true",help="if set then tuframework will ")
     #print(torch.cuda.is_available())
 
-    sys.argv = ['main_cls.py','100','0']
-    os.environ["CUDA_VISIBLE_DEVICES"] = "2"
+    sys.argv = ['main_cls.py','100','1']
+    os.environ["CUDA_VISIBLE_DEVICES"] = "1"
 
     args = parser.parse_args()
     data_root = args.data_root
@@ -57,6 +57,8 @@ if __name__ == '__main__':
 
 #seg or cls
     model_trainer = Trainer(fold,1, data_root, out_path, out_checkpoints,raw_path)
+    model_trainer.initialize(not validation_only)
+
     if not validation_only:
         if args.continue_training:
             model_trainer.load_latest_checkpoint()

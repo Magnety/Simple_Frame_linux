@@ -8,6 +8,8 @@ from simple_frame.network_architecture.neural_network import SegmentationNetwork
 from simple_frame.network_architecture.neural_network import ClassficationNetwork
 from simple_frame.loss_function.focal_loss import focal_loss
 from multiprocessing import Pool
+from torch.cuda.amp import GradScaler, autocast
+
 from time import sleep
 from collections import OrderedDict
 from torch.optim import lr_scheduler
@@ -47,6 +49,8 @@ class Trainer(nn.Module):
         self.fp16 = False
         self.plans_file = data_root+"/Plansv2.1_plans_3D.pkl"
         self.fc_path = raw_path
+        self.dataset_tr = self.dataset_val = None  # do not need to be used, they just appear if you are using the suggested load_dataset_and_do_split
+
 
     def initialize(self, training=True):
         if not self.was_initialized:
@@ -70,7 +74,7 @@ class Trainer(nn.Module):
             self.oversample_foreground_percent = 0.33
             self.pad_all_sides = None
 
-            self.patience = 50
+            self.patience = 10
             self.val_eval_criterion_alpha = 0.9  # alpha * old + (1-alpha) * new
             # if this is too low then the moving average will be too noisy and the training may terminate early. If it is
             # too high the training will take forever
@@ -120,6 +124,17 @@ class Trainer(nn.Module):
                                                                      self.data_aug_params[
                                                                          'patch_size_for_spatialtransform'],
                                                                      self.data_aug_params)
+                total = 0
+                positive = 0
+                for k in self.dataset_tr.keys():
+                    class_path = self.fc_path + '/classesTr'
+                    class_source = open(class_path + '/' + k + '.txt')  # 打开源文件
+                    indate = class_source.read()  # 显示所有源文件内容
+                    if int(indate) == 1:
+                        positive += 1
+                    total += 1
+                    positive_weight = positive / total
+                self.class_loss = focal_loss(alpha=positive_weight)
 
             #self.network = MTLN3D().cuda()
             self.network = VNet_class(num_classes=self.num_classes, deep_supervision=True).cuda()
@@ -129,17 +144,7 @@ class Trainer(nn.Module):
                                                                patience=self.lr_scheduler_patience,
                                                                verbose=True, threshold=self.lr_scheduler_eps,
                                                                threshold_mode="abs")
-            total = 0
-            positive = 0
-            for k in self.dataset_tr.keys():
-                class_path = self.fc_path + '/classesTr'
-                class_source = open(class_path + '/' + k + '.txt')  # 打开源文件
-                indate = class_source.read()  # 显示所有源文件内容
-                if int(indate)==1:
-                    positive+=1
-                total+=1
-                positive_weight = positive / total
-            self.class_loss = focal_loss(alpha=positive_weight)
+
         else:
             self.print_to_log_file('self.was_initialized is True, not running self.initialize again')
         self.was_initialized = True
@@ -495,8 +500,8 @@ class Trainer(nn.Module):
         if isfile(self.output_folder+'/'+"model_final_checkpoint.model"):
             return self.load_checkpoint(self.output_folder+'/'+"model_final_checkpoint.model", train=train)
         if isfile(self.output_folder+'/'+ "model_latest.model"):
-            return self.load_checkpoint(self.output_folder+'/'+ "model_latest.model", train=train)
-        if isfile(self.output_folder+'/'+ "model_best.model"):
+            return self.load_checkpoint(self.output_folder+'/'+ "epoch_100_model_best.model", train=train)
+        if isfile(self.output_folder+'/'+ "epoch_100_model_best.model"):
             return self.load_best_checkpoint(train)
         raise RuntimeError("No checkpoint found")
 
@@ -578,7 +583,7 @@ class Trainer(nn.Module):
             if self.val_eval_criterion_MA > self.best_val_eval_criterion_MA:
                 self.best_val_eval_criterion_MA = self.val_eval_criterion_MA
                 self.print_to_log_file("saving best segmentation epoch checkpoint...")
-                self.save_checkpoint(join(self.output_folder, "model_best_seg.model"))
+                self.save_checkpoint(join(self.output_folder, "model_best_cls.model"))
 
             # Now see if the moving average of the train loss has improved. If yes then reset patience, else
             # increase patience
@@ -759,11 +764,11 @@ class Trainer(nn.Module):
         """
         We need to wrap this because we need to enforce self.network.do_ds = False for prediction
         """
+
         ds = self.network.do_ds
         self.network.do_ds = False
         current_mode = self.network.training
         self.network.eval()
-
         assert self.was_initialized, "must initialize, ideally with checkpoint (or train first)"
         if self.dataset_val is None:
             self.load_dataset()
@@ -965,3 +970,74 @@ class Trainer(nn.Module):
         print(ret)"""
         self.network.train(current_mode)
         return ret
+
+    def load_checkpoint_ram(self, checkpoint, train=True):
+        """
+        used for if the checkpoint is already in ram
+        :param checkpoint:
+        :param train:
+        :return:
+        """
+        if not self.was_initialized:
+            self.initialize(train)
+
+        new_state_dict = OrderedDict()
+        print("new_state_dict:", new_state_dict)
+
+        curr_state_dict_keys = list(self.network.state_dict().keys())
+        print("curr_state_dict_keys:", curr_state_dict_keys)
+
+        # if state dict comes form nn.DataParallel but we use non-parallel model here then the state dict keys do not
+        # match. Use heuristic to make it match
+        for k, value in checkpoint['state_dict'].items():
+            key = k
+            if key not in curr_state_dict_keys and key.startswith('module.'):
+                key = key[7:]
+            new_state_dict[key] = value
+
+        if self.fp16:
+            self._maybe_init_amp()
+            if 'amp_grad_scaler' in checkpoint.keys():
+                self.amp_grad_scaler.load_state_dict(checkpoint['amp_grad_scaler'])
+
+        self.network.load_state_dict(new_state_dict)
+        self.epoch = checkpoint['epoch']
+        if train:
+            optimizer_state_dict = checkpoint['optimizer_state_dict']
+            if optimizer_state_dict is not None:
+                self.optimizer.load_state_dict(optimizer_state_dict)
+
+            if self.lr_scheduler is not None and hasattr(self.lr_scheduler, 'load_state_dict') and checkpoint[
+                'lr_scheduler_state_dict'] is not None:
+                self.lr_scheduler.load_state_dict(checkpoint['lr_scheduler_state_dict'])
+
+            if issubclass(self.lr_scheduler.__class__, _LRScheduler):
+                self.lr_scheduler.step(self.epoch)
+
+        self.all_tr_losses, self.all_val_losses, self.all_val_losses_tr_mode, self.all_val_eval_metrics = checkpoint[
+            'plot_stuff']
+
+        # load best loss (if present)
+        if 'best_stuff' in checkpoint.keys():
+            self.best_epoch_based_on_MA_tr_loss, self.best_MA_tr_loss_for_patience, self.best_val_eval_criterion_MA = \
+            checkpoint[
+                'best_stuff']
+
+        # after the training is done, the epoch is incremented one more time in my old code. This results in
+        # self.epoch = 1001 for old trained models when the epoch is actually 1000. This causes issues because
+        # len(self.all_tr_losses) = 1000 and the plot function will fail. We can easily detect and correct that here
+        if self.epoch != len(self.all_tr_losses):
+            self.print_to_log_file("WARNING in loading checkpoint: self.epoch != len(self.all_tr_losses). This is "
+                                   "due to an old bug and should only appear when you are loading old models. New "
+                                   "models should have this fixed! self.epoch is now set to len(self.all_tr_losses)")
+            self.epoch = len(self.all_tr_losses)
+            self.all_tr_losses = self.all_tr_losses[:self.epoch]
+            self.all_val_losses = self.all_val_losses[:self.epoch]
+            self.all_val_losses_tr_mode = self.all_val_losses_tr_mode[:self.epoch]
+            self.all_val_eval_metrics = self.all_val_eval_metrics[:self.epoch]
+
+        self._maybe_init_amp()
+
+    def _maybe_init_amp(self):
+        if self.fp16 and self.amp_grad_scaler is None:
+            self.amp_grad_scaler = GradScaler()
