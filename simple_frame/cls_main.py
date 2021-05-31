@@ -36,7 +36,7 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
     data_root = args.data_root
-    validation_only = args.validation_only
+    validation_only = args.validation_only #validate True
     val_folder = args.val_folder
     fold = args.fold
     valbest = args.valbest

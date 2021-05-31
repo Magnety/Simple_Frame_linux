@@ -486,21 +486,21 @@ class Trainer(nn.Module):
                 self.lr_scheduler.step(self.epoch + 1)
         self.print_to_log_file("lr is now (scheduler) %s" % str(self.optimizer.param_groups[0]['lr']))
 
-    def load_best_checkpoint(self, train=True):
+    def load_best_checkpoint(self, train=True, epoch=100):
         if self.fold is None:
             raise RuntimeError("Cannot load best checkpoint if self.fold is None")
-        if isfile(self.output_folder+'/'+"model_best.model"):
-            self.load_checkpoint(self.output_folder+'/'+ "model_best.model", train=train)
+        if isfile(self.output_folder+'/'+"epoch_%s_model_best.model"%epoch):
+            self.load_checkpoint(self.output_folder+'/'+ "epoch_%s_model_best.model"%epoch, train=train)
         else:
             self.print_to_log_file("WARNING! model_best.model does not exist! Cannot load best checkpoint. Falling "
                                    "back to load_latest_checkpoint")
             self.load_latest_checkpoint(train)
 
-    def load_latest_checkpoint(self, train=True):
+    def load_latest_checkpoint(self, train=True,epoch=100):
         if isfile(self.output_folder+'/'+"model_final_checkpoint.model"):
             return self.load_checkpoint(self.output_folder+'/'+"model_final_checkpoint.model", train=train)
-        if isfile(self.output_folder+'/'+ "model_latest.model"):
-            return self.load_checkpoint(self.output_folder+'/'+ "epoch_100_model_best.model", train=train)
+        if isfile(self.output_folder+'/'+ "epoch_%s_model_best.model"%epoch):
+            return self.load_checkpoint(self.output_folder+'/'+ "epoch_%s_model_best.model"%epoch, train=train)
         if isfile(self.output_folder+'/'+ "epoch_100_model_best.model"):
             return self.load_best_checkpoint(train)
         raise RuntimeError("No checkpoint found")
