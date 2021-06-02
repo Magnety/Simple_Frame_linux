@@ -1,73 +1,201 @@
 import torch
 import torch.nn as nn
+from typing import Union, List, Dict, Any, cast
+from simple_frame.network_architecture.neural_network import ClassficationNetwork
 
-cfg = {
-    'A' : [32,     'M1', 64,      'M1', 128, 128,           'M2', 256, 256,           'M2', 256, 256,           'M2'],
-    'B' : [64, 64, 'M', 128, 128, 'M', 256, 256,           'M', 512, 512,           'M', 512, 512,           'M'],
-    'D' : [64, 64, 'M1', 128, 128, 'M2', 256, 256, 256,      'M2', 512, 512, 512,      'M2', 512, 512, 512,      'M2'],
-    'E' : [64, 64, 'M1', 128, 128, 'M2', 256, 256, 256, 256, 'M', 512, 512, 512, 512, 'M', 512, 512, 512, 512, 'M']
+__all__ = [
+    'VGG', 'vgg11', 'vgg11_bn', 'vgg13', 'vgg13_bn', 'vgg16', 'vgg16_bn',
+    'vgg19_bn', 'vgg19',
+]
+
+
+model_urls = {
+    'vgg11': 'https://download.pytorch.org/models/vgg11-bbd30ac9.pth',
+    'vgg13': 'https://download.pytorch.org/models/vgg13-c768596a.pth',
+    'vgg16': 'https://download.pytorch.org/models/vgg16-397923af.pth',
+    'vgg19': 'https://download.pytorch.org/models/vgg19-dcbb9e9d.pth',
+    'vgg11_bn': 'https://download.pytorch.org/models/vgg11_bn-6002323d.pth',
+    'vgg13_bn': 'https://download.pytorch.org/models/vgg13_bn-abd245e5.pth',
+    'vgg16_bn': 'https://download.pytorch.org/models/vgg16_bn-6c64b313.pth',
+    'vgg19_bn': 'https://download.pytorch.org/models/vgg19_bn-c79401a0.pth',
 }
 
-class VGG(nn.Module):
 
-    def __init__(self, features, num_class=2):
-        super().__init__()
+class VGG(ClassficationNetwork):
+
+    def __init__(
+        self,
+        features: nn.Module,
+        num_classes,deep_supervision,
+        init_weights: bool = True
+    ) -> None:
+        super(VGG, self).__init__()
+        self.do_ds = False
+        self.conv_op = nn.Conv3d
+        self.norm_op = nn.BatchNorm3d
+        self.dropout_op = nn.Dropout3d
+        self.num_classes = num_classes
+        self._deep_supervision = deep_supervision
+        self.do_ds = deep_supervision
         self.features = features
+        self.avgpool = nn.AdaptiveAvgPool3d((3,3,3))
         self.classifier = nn.Sequential(
-            nn.Linear(359, 2048),
-            nn.ReLU(inplace=True),
-            nn.Dropout(0.5),
-            nn.Linear(2048, 2048),
-            nn.ReLU(inplace=True),
-            nn.Dropout(0.5),
-            nn.Linear(2048, num_class),
+            nn.Linear(512 * 27, 4096),
+            nn.ReLU(True),
+            nn.Dropout(),
+            nn.Linear(4096, 4096),
+            nn.ReLU(True),
+            nn.Dropout(),
+            nn.Linear(4096, self.num_classes),
+            nn.LogSoftmax()
         )
-        self.extra = nn.Sequential(nn.AdaptiveAvgPool3d((1, 1, 1)),nn.Dropout(0.5))
 
-    def forward(self, x,feature):
-       # print("///////feature//////////")
-        #print(feature.shape)
-        output = self.features(x)
-        extra = self.extra(output)
-        extra = extra.view(extra.size()[0], -1)
-        #print("///////extra//////////")
-        #print(extra.shape)
-        f = torch.cat((feature,extra),dim=-1)
-        #print("extra.shape:",extra.shape)
-        #print("feature.shape:",feature.shape)
-        #print("f.shape:",f.shape)
-        output = self.classifier(f)
-        return output
+        if init_weights:
+            self._initialize_weights()
 
-def make_layers(cfg, batch_norm=False):
-    layers = []
-    input_channel = 1
-    for l in cfg:
-        if l == 'M1':
+    def forward(self, x: torch.Tensor,f) -> torch.Tensor:
+        x = self.features(x)
+        x = self.avgpool(x)
+        x = x.view(x.size()[0], -1)
+        x = self.classifier(x)
+        """features = torch.cat((x,f),-1)
+        x = self.classifier1(features)"""
+        return x
+
+    def _initialize_weights(self) -> None:
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.BatchNorm2d):
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.Linear):
+                nn.init.normal_(m.weight, 0, 0.01)
+                nn.init.constant_(m.bias, 0)
+
+
+def make_layers(cfg: List[Union[str, int]], batch_norm: bool = False) -> nn.Sequential:
+    layers: List[nn.Module] = []
+    in_channels = 1
+    for v in cfg:
+        if v == 'M1':
             layers += [nn.MaxPool3d(kernel_size=2, stride=2)]
             continue
-        if l == 'M2':
-            layers += [nn.MaxPool3d(kernel_size=(1,2,2), stride=2)]
+        elif v == 'M2':
+            layers += [nn.MaxPool3d(kernel_size=(1, 2, 2), stride=2)]
             continue
-
-        layers += [nn.Conv3d(input_channel, l, kernel_size=3, padding=1)]
-
-        if batch_norm:
-            layers += [nn.BatchNorm3d(l)]
-
-        layers += [nn.ReLU(inplace=True)]
-        input_channel = l
-
+        else:
+            v = cast(int, v)
+            conv3d = nn.Conv3d(in_channels, v, kernel_size=3, padding=1)
+            if batch_norm:
+                layers += [conv3d, nn.BatchNorm3d(v), nn.ReLU(inplace=True)]
+            else:
+                layers += [conv3d, nn.ReLU(inplace=True)]
+            in_channels = v
     return nn.Sequential(*layers)
 
-def vgg11_bn():
-    return VGG(make_layers(cfg['A'], batch_norm=True))
 
-def vgg13_bn():
-    return VGG(make_layers(cfg['B'], batch_norm=True))
+cfgs: Dict[str, List[Union[str, int]]] = {
+    'A': [64, 'M1', 128, 'M1', 256, 256, 'M2', 512, 512, 'M2', 512, 512, 'M2'],
+    'B': [64, 64, 'M', 128, 128, 'M', 256, 256, 'M', 512, 512, 'M', 512, 512, 'M'],
+    'D': [64, 64, 'M1', 128, 128, 'M1', 256, 256, 256, 'M2', 512, 512, 512, 'M2', 512, 512, 512, 'M2'],
+    'E': [64, 64, 'M', 128, 128, 'M', 256, 256, 256, 256, 'M', 512, 512, 512, 512, 'M', 512, 512, 512, 512, 'M'],
+}
 
-def vgg16_bn():
-    return VGG(make_layers(cfg['D'], batch_norm=True))
 
-def vgg19_bn():
-    return VGG(make_layers(cfg['E'], batch_norm=True))
+def _vgg(arch: str, cfg: str, batch_norm: bool, pretrained: bool, progress: bool, **kwargs: Any) -> VGG:
+    if pretrained:
+        kwargs['init_weights'] = False
+    model = VGG(make_layers(cfgs[cfg], batch_norm=batch_norm), **kwargs)
+
+    return model
+
+
+def vgg11(pretrained: bool = False, progress: bool = True, **kwargs: Any) -> VGG:
+    r"""VGG 11-layer model (configuration "A") from
+    `"Very Deep Convolutional Networks For Large-Scale Image Recognition" <https://arxiv.org/pdf/1409.1556.pdf>`._
+
+    Args:
+        pretrained (bool): If True, returns a model pre-trained on ImageNet
+        progress (bool): If True, displays a progress bar of the download to stderr
+    """
+    return _vgg('vgg11', 'A', False, pretrained, progress, **kwargs)
+
+
+def vgg11_bn(pretrained: bool = False, progress: bool = True, **kwargs: Any) -> VGG:
+    r"""VGG 11-layer model (configuration "A") with batch normalization
+    `"Very Deep Convolutional Networks For Large-Scale Image Recognition" <https://arxiv.org/pdf/1409.1556.pdf>`._
+
+    Args:
+        pretrained (bool): If True, returns a model pre-trained on ImageNet
+        progress (bool): If True, displays a progress bar of the download to stderr
+    """
+    return _vgg('vgg11_bn', 'A', True, pretrained, progress, **kwargs)
+
+
+def vgg13(pretrained: bool = False, progress: bool = True, **kwargs: Any) -> VGG:
+    r"""VGG 13-layer model (configuration "B")
+    `"Very Deep Convolutional Networks For Large-Scale Image Recognition" <https://arxiv.org/pdf/1409.1556.pdf>`._
+
+    Args:
+        pretrained (bool): If True, returns a model pre-trained on ImageNet
+        progress (bool): If True, displays a progress bar of the download to stderr
+    """
+    return _vgg('vgg13', 'B', False, pretrained, progress, **kwargs)
+
+
+def vgg13_bn(pretrained: bool = False, progress: bool = True, **kwargs: Any) -> VGG:
+    r"""VGG 13-layer model (configuration "B") with batch normalization
+    `"Very Deep Convolutional Networks For Large-Scale Image Recognition" <https://arxiv.org/pdf/1409.1556.pdf>`._
+
+    Args:
+        pretrained (bool): If True, returns a model pre-trained on ImageNet
+        progress (bool): If True, displays a progress bar of the download to stderr
+    """
+    return _vgg('vgg13_bn', 'B', True, pretrained, progress, **kwargs)
+
+
+def vgg16(pretrained: bool = False, progress: bool = True, **kwargs: Any) -> VGG:
+    r"""VGG 16-layer model (configuration "D")
+    `"Very Deep Convolutional Networks For Large-Scale Image Recognition" <https://arxiv.org/pdf/1409.1556.pdf>`._
+
+    Args:
+        pretrained (bool): If True, returns a model pre-trained on ImageNet
+        progress (bool): If True, displays a progress bar of the download to stderr
+    """
+    return _vgg('vgg16', 'D', False, pretrained, progress, **kwargs)
+
+
+def vgg16_bn(pretrained: bool = False, progress: bool = True, **kwargs: Any) -> VGG:
+    r"""VGG 16-layer model (configuration "D") with batch normalization
+    `"Very Deep Convolutional Networks For Large-Scale Image Recognition" <https://arxiv.org/pdf/1409.1556.pdf>`._
+
+    Args:
+        pretrained (bool): If True, returns a model pre-trained on ImageNet
+        progress (bool): If True, displays a progress bar of the download to stderr
+    """
+    return _vgg('vgg16_bn', 'D', True, pretrained, progress, **kwargs)
+
+
+def vgg19(pretrained: bool = False, progress: bool = True, **kwargs: Any) -> VGG:
+    r"""VGG 19-layer model (configuration "E")
+    `"Very Deep Convolutional Networks For Large-Scale Image Recognition" <https://arxiv.org/pdf/1409.1556.pdf>`._
+
+    Args:
+        pretrained (bool): If True, returns a model pre-trained on ImageNet
+        progress (bool): If True, displays a progress bar of the download to stderr
+    """
+    return _vgg('vgg19', 'E', False, pretrained, progress, **kwargs)
+
+
+def vgg19_bn(pretrained: bool = False, progress: bool = True, **kwargs: Any) -> VGG:
+    r"""VGG 19-layer model (configuration 'E') with batch normalization
+    `"Very Deep Convolutional Networks For Large-Scale Image Recognition" <https://arxiv.org/pdf/1409.1556.pdf>`._
+
+    Args:
+        pretrained (bool): If True, returns a model pre-trained on ImageNet
+        progress (bool): If True, displays a progress bar of the download to stderr
+    """
+    return _vgg('vgg19_bn', 'E', True, pretrained, progress, **kwargs)
