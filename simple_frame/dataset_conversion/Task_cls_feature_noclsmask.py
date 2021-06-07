@@ -24,17 +24,17 @@ if __name__ == "__main__":
     This is the KiTS dataset after Nick fixed all the labels that had errors. Downloaded on Jan 6th 2020    
     """
 
-    base = "G:/simple_frame_data_store/Breast_c_f_noclsmask"
+    base = "/home/ubuntu/liuyiyao/Simple_Frame_data/breast_data_153_noclsmask"
 
-    task_id = 100
-    task_name = "Breast_c_f_noclsmask"
+    task_id = 611
+    task_name = "Breast_c_noclsmask_153"
     foldername = "Task%03.0d_%s" % (task_id, task_name)
     out_base =  raw_data+"/"+foldername
     imagestr =  out_base+"/"+ "imagesTr"
     imagests =  out_base+"/"+"imagesTs"
     labelstr =  out_base+"/"+ "labelsTr"
     classestr = out_base+"/"+ "classesTr"
-    featurestr = out_base+"/"+ "featuresTr"
+    #featurestr = out_base+"/"+ "featuresTr"
     if not os.path.isdir(imagestr):
         os.makedirs(imagestr)
     if not os.path.isdir(imagests):
@@ -43,14 +43,14 @@ if __name__ == "__main__":
         os.makedirs(labelstr)
     if not os.path.isdir(classestr):
         os.makedirs(classestr)
-    if not os.path.isdir(featurestr):
-        os.makedirs(featurestr)
+    #if not os.path.isdir(featurestr):
+        #os.makedirs(featurestr)
     train_patient_names = []
     test_patient_names = []
     all_cases = subfolders(base, join=False)
 
-    train_patients = all_cases[:103]
-    test_patients = all_cases[103:]
+    train_patients = all_cases[:153]
+    test_patients = all_cases[153:]
 
     for p in train_patients:
         curr =  base+"/"+ p
@@ -61,7 +61,7 @@ if __name__ == "__main__":
         shutil.copy(image_file,  imagestr+"/"+ p + "_0000.nii.gz")
         shutil.copy(label_file,  labelstr+"/"+ p + ".nii.gz")
         shutil.copy(class_file,  classestr+"/"+ p + ".txt")
-        shutil.copy(feature_file,  featurestr+"/"+ p + ".npy")
+        #shutil.copy(feature_file,  featurestr+"/"+ p + ".npy")
         train_patient_names.append(p)
 
     for p in test_patients:

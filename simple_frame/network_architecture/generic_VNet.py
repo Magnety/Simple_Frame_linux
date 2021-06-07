@@ -368,8 +368,9 @@ class VNet_class(ClassficationNetwork):
             nn.Linear(2048, num_classes),
             nn.LogSoftmax()
         )
-
-    def forward(self, x,f):
+    #liuyiyao no feature
+    #def forward(self, x,f):
+    def forward(self, x):
         #print('x:', x.shape)
         #down
         seg_outputs = []

@@ -373,19 +373,22 @@ class DataLoader3D(SlimDataLoaderBase):
             indate = class_source.read()  # 显示所有源文件内容
             class_lyy = np.array(float(indate))
             class_label.append(class_lyy)
-
-            feature_path = self.fc_path+'/featuresTr'
-            feature_source = np.load(feature_path+ '/' + i + '.npy')
-            feature.append(feature_source)
+            #liuyiyao no feature
+            #feature_path = self.fc_path+'/featuresTr'
+            #feature_source = np.load(feature_path+ '/' + i + '.npy')
+            # feature.append(feature_source)
         # this is bad. Slow. Better preallocate data and set with np.zeros(). But this way we don't have to know how
         # many color channels data has and how many seg channels there are
         data = np.vstack(data)
         seg = np.vstack(seg)
         class_label = np.vstack(class_label)
-        feature = np.vstack(feature)
+        # liuyiyao no feature
+        #feature = np.vstack(feature)
         #print("/////////////return1////////////////////////")
+        # liuyiyao no feature
+        #return {'data':data, 'seg':seg, 'class_label':class_label, 'feature':feature,'properties':case_properties, 'keys': selected_keys}
+        return {'data':data, 'seg':seg, 'class_label':class_label,'properties':case_properties, 'keys': selected_keys}
 
-        return {'data':data, 'seg':seg, 'class_label':class_label, 'feature':feature,'properties':case_properties, 'keys': selected_keys}
 
 
 class DataLoader2D(SlimDataLoaderBase):

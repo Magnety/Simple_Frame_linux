@@ -23,8 +23,8 @@ class Ensemble(ClassficationNetwork):
         self.resnet = resnext50_32x4d(num_classes=self.num_classes)
 
 
-    def forward(self, x,f):
-        out1 = self.vnet(x,f)
-        out2 = self.resnet(x,f)
+    def forward(self, x):
+        out1 = self.vnet(x)
+        out2 = self.resnet(x)
         out = (out1+out2)/2
         return out

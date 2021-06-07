@@ -235,7 +235,7 @@ class ResNet(ClassficationNetwork):
 
         return nn.Sequential(*layers)
 
-    def _forward_impl(self, x: Tensor,f) -> Tensor:
+    def _forward_impl(self, x: Tensor) -> Tensor:
         # See note [TorchScript super()]
         x = self.conv1(x)
         x = self.bn1(x)
@@ -253,8 +253,8 @@ class ResNet(ClassficationNetwork):
 
         return x
 
-    def forward(self, x: Tensor,f) -> Tensor:
-        return self._forward_impl(x,f)
+    def forward(self, x: Tensor) -> Tensor:
+        return self._forward_impl(x)
 
 
 def _resnet(

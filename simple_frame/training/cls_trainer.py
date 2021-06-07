@@ -442,23 +442,28 @@ class Trainer(nn.Module):
         data = data_dict['data']
         target = data_dict['target']
         class_target = data_dict['class_label']
-        feature = data_dict['feature']
+        #liuyiyao no feature
+        #feature = data_dict['feature']
         if not isinstance(data, torch.Tensor):
             data = torch.from_numpy(data).float()
         if not isinstance(target, torch.Tensor):
             target = torch.from_numpy(target).float()
         if not isinstance(class_target, torch.Tensor):
             class_target = torch.from_numpy(class_target).float()
-        if not isinstance(feature, torch.Tensor):
-            feature = torch.from_numpy(feature).float()
+        #liuyiyao no feature
+
+        #if not isinstance(feature, torch.Tensor):
+            #feature = torch.from_numpy(feature).float()
         data = data.cuda(non_blocking=True)
         target = target.cuda(non_blocking=True)
 
         class_target = class_target.cuda(non_blocking=True)
-
-        feature = feature.cuda(non_blocking=True)
+        #liuyiyao no feature
+        #feature = feature.cuda(non_blocking=True)
         self.optimizer.zero_grad()
-        output = self.network(data,feature)
+        #liuyiyao no feature
+        #output = self.network(data,feature)
+        output = self.network(data)
         #print("///////////output///////////")
         #print(output)
         #output = self.network(data)
@@ -926,9 +931,10 @@ class Trainer(nn.Module):
             fname = properties['list_of_data_files'][0].split("/")[-1][:-12]
 
             data = np.load(self.dataset[k]['data_file'])['data']
-            feature_path = self.fc_path+'/featuresTr'
+            #liuyiyao no feature
+            #feature_path = self.fc_path+'/featuresTr'
             class_path = self.fc_path+'/classesTr'
-            feature = np.load(feature_path+ '/' + k + '.npy')
+            #feature = np.load(feature_path+ '/' + k + '.npy')
             class_source = open(class_path + '/' + k + '.txt')  # 打开源文件
             indate = class_source.read()  # 显示所有源文件内容
             class_target= np.array(float(indate))
@@ -936,21 +942,30 @@ class Trainer(nn.Module):
                 class_target = torch.from_numpy(class_target).float()
 
 
-            if not isinstance(feature, torch.Tensor):
-                feature = torch.from_numpy(feature).float()
-            feature = feature.cuda(non_blocking=True)
-            feature= feature.unsqueeze(dim=0)
+            #if not isinstance(feature, torch.Tensor):
+                #feature = torch.from_numpy(feature).float()
+            #feature = feature.cuda(non_blocking=True)
+            #feature= feature.unsqueeze(dim=0)
             connect_mask_box = properties['connect_mask_box']
             #print(k, data.shape)
             data[-1][data[-1] == -1] = 0
-            pred = self.predict_preprocessed_data_return_cls_and_softmax(data[:-1],feature,connect_mask_box,
+            #liuyiyao no feature
+            """pred = self.predict_preprocessed_data_return_cls_and_softmax(data[:-1],feature,connect_mask_box,
                                                                                  do_mirroring=do_mirroring,
                                                                                  mirror_axes=mirror_axes,
                                                                                  use_sliding_window=use_sliding_window,
                                                                                  step_size=step_size,
                                                                                  use_gaussian=use_gaussian,
                                                                                  all_in_gpu=all_in_gpu,
-                                                                                 mixed_precision=self.fp16)
+                                                                                 mixed_precision=self.fp16)"""
+            pred = self.predict_preprocessed_data_return_cls_and_softmax(data[:-1], connect_mask_box,
+                                                                         do_mirroring=do_mirroring,
+                                                                         mirror_axes=mirror_axes,
+                                                                         use_sliding_window=use_sliding_window,
+                                                                         step_size=step_size,
+                                                                         use_gaussian=use_gaussian,
+                                                                         all_in_gpu=all_in_gpu,
+                                                                         mixed_precision=self.fp16)
             if not isinstance(pred, torch.Tensor):
                 pred = torch.from_numpy(pred).float()
             softmax_pred = softmax_helper(pred)
@@ -1025,13 +1040,22 @@ class Trainer(nn.Module):
                                              None, force_separate_z=force_separate_z,
                                              interpolation_order_z=interpolation_order_z)
         print("done")
-
-    def predict_preprocessed_data_return_cls_and_softmax(self, data: np.ndarray,feature, connect_mask_box,do_mirroring: bool = True,
+    #liuyiyao no feature
+    """def predict_preprocessed_data_return_cls_and_softmax(self, data: np.ndarray,feature, connect_mask_box,do_mirroring: bool = True,
                                                          mirror_axes: Tuple[int] = None,
                                                          use_sliding_window: bool = True, step_size: float = 0.5,
                                                          use_gaussian: bool = True, pad_border_mode: str = 'constant',
                                                          pad_kwargs: dict = None, all_in_gpu: bool = False,
-                                                         verbose: bool = True, mixed_precision: bool = True) -> Tuple[np.ndarray, np.ndarray]:
+                                                         verbose: bool = True, mixed_precision: bool = True) -> Tuple[np.ndarray, np.ndarray]:"""
+
+    def predict_preprocessed_data_return_cls_and_softmax(self, data: np.ndarray,  connect_mask_box,
+                                                         do_mirroring: bool = True,
+                                                         mirror_axes: Tuple[int] = None,
+                                                         use_sliding_window: bool = True, step_size: float = 0.5,
+                                                         use_gaussian: bool = True, pad_border_mode: str = 'constant',
+                                                         pad_kwargs: dict = None, all_in_gpu: bool = False,
+                                                         verbose: bool = True, mixed_precision: bool = True) -> Tuple[
+        np.ndarray, np.ndarray]:
         """
         :param data:
         :param do_mirroring:
@@ -1059,7 +1083,15 @@ class Trainer(nn.Module):
         assert isinstance(self.network, tuple(valid))
         current_mode = self.network.training
         self.network.eval()
-        ret = self.network.predict_3D(data,feature,connect_mask_box, do_mirroring=do_mirroring, mirror_axes=mirror_axes,
+        #liuyiyao no feature
+        """ret = self.network.predict_3D(data,feature,connect_mask_box, do_mirroring=do_mirroring, mirror_axes=mirror_axes,
+                                      use_sliding_window=use_sliding_window, step_size=step_size,
+                                      patch_size=self.patch_size,
+                                      use_gaussian=use_gaussian, pad_border_mode=pad_border_mode,
+                                      pad_kwargs=pad_kwargs, all_in_gpu=all_in_gpu, verbose=verbose,
+                                      mixed_precision=mixed_precision)"""
+        ret = self.network.predict_3D(data,  connect_mask_box, do_mirroring=do_mirroring,
+                                      mirror_axes=mirror_axes,
                                       use_sliding_window=use_sliding_window, step_size=step_size,
                                       patch_size=self.patch_size,
                                       use_gaussian=use_gaussian, pad_border_mode=pad_border_mode,

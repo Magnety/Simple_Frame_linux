@@ -831,8 +831,16 @@ class ClassficationNetwork(NeuralNetwork):
         # can be expensive, so it makes sense to save and reuse them.
         self._gaussian_3d = self._patch_size_for_gaussian_3d = None
         self._gaussian_2d = self._patch_size_for_gaussian_2d = None
+    #liuyiyao no feature
+    """def predict_3D(self, x: np.ndarray,feature,connect_mask_box, do_mirroring: bool, mirror_axes: Tuple[int, ...] = (0, 1, 2),
+                   use_sliding_window: bool = False,
+                   step_size: float = 0.5, patch_size: Tuple[int, ...] = None,
+                   use_gaussian: bool = False, pad_border_mode: str = "constant",
+                   pad_kwargs: dict = None, all_in_gpu: bool = False,
+                   verbose: bool = True, mixed_precision: bool = True) -> Tuple[np.ndarray, np.ndarray]:"""
 
-    def predict_3D(self, x: np.ndarray,feature,connect_mask_box, do_mirroring: bool, mirror_axes: Tuple[int, ...] = (0, 1, 2),
+    def predict_3D(self, x: np.ndarray, connect_mask_box, do_mirroring: bool,
+                   mirror_axes: Tuple[int, ...] = (0, 1, 2),
                    use_sliding_window: bool = False,
                    step_size: float = 0.5, patch_size: Tuple[int, ...] = None,
                    use_gaussian: bool = False, pad_border_mode: str = "constant",
@@ -906,8 +914,14 @@ class ClassficationNetwork(NeuralNetwork):
             with torch.no_grad():
                 if self.conv_op == nn.Conv3d:
                     if use_sliding_window:
-                        res = self._internal_predict_3D_3Dconv_tiled(x,feature,connect_mask_box, step_size, do_mirroring, mirror_axes, patch_size,
+                        #liuyiyao no feature
+                        """res = self._internal_predict_3D_3Dconv_tiled(x,feature,connect_mask_box, step_size, do_mirroring, mirror_axes, patch_size,
                                                                       use_gaussian, pad_border_mode,
+                                                                     pad_kwargs=pad_kwargs, all_in_gpu=all_in_gpu,
+                                                                     verbose=verbose)"""
+                        res = self._internal_predict_3D_3Dconv_tiled(x,  connect_mask_box, step_size,
+                                                                     do_mirroring, mirror_axes, patch_size,
+                                                                     use_gaussian, pad_border_mode,
                                                                      pad_kwargs=pad_kwargs, all_in_gpu=all_in_gpu,
                                                                      verbose=verbose)
                     else:
@@ -1047,8 +1061,14 @@ class ClassficationNetwork(NeuralNetwork):
             steps_here = [int(np.round(actual_step_size * i)) for i in range(num_steps[dim])]
             steps.append(steps_here)
         return steps
+    #liuyiyao no feature
+    """def _internal_predict_3D_3Dconv_tiled(self, x: np.ndarray,feature,connect_mask_box, step_size: float, do_mirroring: bool, mirror_axes: tuple,
+                                          patch_size: tuple, use_gaussian: bool,
+                                          pad_border_mode: str, pad_kwargs: dict, all_in_gpu: bool,
+                                          verbose: bool) -> Tuple[np.ndarray, np.ndarray]:"""
 
-    def _internal_predict_3D_3Dconv_tiled(self, x: np.ndarray,feature,connect_mask_box, step_size: float, do_mirroring: bool, mirror_axes: tuple,
+    def _internal_predict_3D_3Dconv_tiled(self, x: np.ndarray, connect_mask_box, step_size: float,
+                                          do_mirroring: bool, mirror_axes: tuple,
                                           patch_size: tuple, use_gaussian: bool,
                                           pad_border_mode: str, pad_kwargs: dict, all_in_gpu: bool,
                                           verbose: bool) -> Tuple[np.ndarray, np.ndarray]:
@@ -1155,8 +1175,10 @@ class ClassficationNetwork(NeuralNetwork):
                             z_min = connect_mask_box[cls_key][obj_num][4]
                             z_max = connect_mask_box[cls_key][obj_num][5]
                             if (ub_x>x_min and lb_x<x_max) and (ub_y>y_min and lb_y<y_max) and (ub_z>z_min and lb_z<z_max):
+                                #liuyiyao no feature
+                                #predicted_patch = self._internal_maybe_mirror_and_pred_3D(data[None, :, lb_x:ub_x, lb_y:ub_y, lb_z:ub_z], feature,mirror_axes, do_mirroring,gaussian_importance_map)
 
-                                predicted_patch = self._internal_maybe_mirror_and_pred_3D(data[None, :, lb_x:ub_x, lb_y:ub_y, lb_z:ub_z], feature,mirror_axes, do_mirroring,gaussian_importance_map)
+                                predicted_patch = self._internal_maybe_mirror_and_pred_3D(data[None, :, lb_x:ub_x, lb_y:ub_y, lb_z:ub_z], mirror_axes, do_mirroring,gaussian_importance_map)
                                 #print("///////////predict_patch////////////")
                                 #print(predicted_patch)
                                 if all_in_gpu:
@@ -1243,8 +1265,11 @@ class ClassficationNetwork(NeuralNetwork):
                 predicted_segmentation[predicted_probabilities[i] > 0.5] = c
 
         return predicted_segmentation, predicted_probabilities
-
-    def _internal_maybe_mirror_and_pred_3D(self, x: Union[np.ndarray, torch.tensor], feature,mirror_axes: tuple,
+    #liuyiyao no feature
+    """def _internal_maybe_mirror_and_pred_3D(self, x: Union[np.ndarray, torch.tensor], feature, mirror_axes: tuple,
+                                           do_mirroring: bool = True,
+                                           mult: np.ndarray or torch.tensor = None) -> torch.tensor:"""
+    def _internal_maybe_mirror_and_pred_3D(self, x: Union[np.ndarray, torch.tensor], mirror_axes: tuple,
                                            do_mirroring: bool = True,
                                            mult: np.ndarray or torch.tensor = None) -> torch.tensor:
         assert len(x.shape) == 5, 'x must be (b, c, x, y, z)'
@@ -1252,7 +1277,7 @@ class ClassficationNetwork(NeuralNetwork):
         # we now return a cuda tensor! Not numpy array!
 
         x = to_cuda(maybe_to_torch(x), gpu_id=self.get_device())
-        out_result = self(x,feature)
+        out_result = self(x)
         #print("////////////out_result///////////")
         #print(out_result)
         return out_result
