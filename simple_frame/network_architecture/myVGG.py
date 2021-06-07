@@ -26,7 +26,7 @@ class VGG(ClassficationNetwork):
     def __init__(
         self,
         features: nn.Module,
-        num_classes,deep_supervision,
+        num_classes,deep_supervision=True,
         init_weights: bool = True
     ) -> None:
         super(VGG, self).__init__()

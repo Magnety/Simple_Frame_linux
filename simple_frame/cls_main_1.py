@@ -56,7 +56,7 @@ if __name__ == '__main__':
         os.makedirs(str(out_checkpoints))
 
 #seg or cls
-    model_trainer = Trainer(fold,1, data_root, out_path, out_checkpoints,raw_path)
+    model_trainer = Trainer(fold,1, data_root, out_path, out_checkpoints,raw_path,val_folder)
 
     #validate only
     #model_trainer.initialize(not validation_only)

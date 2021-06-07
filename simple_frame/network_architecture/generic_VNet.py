@@ -359,7 +359,7 @@ class VNet_class(ClassficationNetwork):
         self.ex_feature3 = nn.Sequential(nn.AdaptiveAvgPool3d((1,1,1)))
         self.ex_feature4 = nn.Sequential(nn.AdaptiveAvgPool3d((1,1,1)))
         self.fc1 = nn.Sequential(
-            nn.Linear(463, 2048),
+            nn.Linear(360, 2048),
             nn.ReLU(inplace=True),
             nn.Dropout(0.5),
             nn.Linear(2048, 2048),
@@ -409,7 +409,7 @@ class VNet_class(ClassficationNetwork):
         print(feature1.shape)
         print("//////////feature2.shape///////////")
         print(feature2.shape)"""
-        features = torch.cat((feature1,feature2,feature3,feature4,f),-1)
+        features = torch.cat((feature1,feature2,feature3,feature4),-1)
         features = features.view(features.size()[0],-1)
         #print(features.shape)
         cls_out = self.fc1(features)

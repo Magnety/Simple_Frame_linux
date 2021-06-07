@@ -10,6 +10,7 @@ from simple_frame.loss_function.focal_loss import focal_loss
 from multiprocessing import Pool
 from torch.cuda.amp import GradScaler, autocast
 from torch.optim.lr_scheduler import _LRScheduler
+import torchvision.models
 from time import sleep
 from collections import OrderedDict
 from torch.optim import lr_scheduler
@@ -28,8 +29,6 @@ from simple_frame.data_augmentation.data_augmentation import default_3D_augmenta
 from simple_frame.dataloading.dataset_load import load_dataset, DataLoader3D, unpack_dataset
 from simple_frame.loss_function.Loss_functions import JI_and_Focal_loss, AutomaticWeightedLoss, softmax_helper, sum_tensor
 from simple_frame.network_architecture.myVGG import vgg11_bn
-from simple_frame.network_architecture.myResNet import resnext50_32x4d
-from simple_frame.network_architecture.Ensemble import Ensemble
 from simple_frame.data_augmentation.data_augmentation_moreDA import get_moreDA_augmentation
 try:
     from apex import amp
@@ -37,14 +36,13 @@ except ImportError:
     amp = None
 
 class Trainer(nn.Module):
-    def __init__(self, fold,stage, data_root, out_path, output_fold,raw_path,valfolder):
+    def __init__(self, fold,stage, data_root, out_path, output_fold,raw_path):
         super(Trainer, self).__init__()
         self.fold = fold
         self.stage = stage
         self.data_root = data_root +"/plans_v2.1_stage0"
         self.dataset_directory = out_path
         self.output_checkpoints = self.output_folder = output_fold
-        self.valfolder = valfolder
         self.was_initialized = False
         self.log_file = self.use_mask_for_norm = None
         self.batch_dice = False
@@ -65,17 +63,16 @@ class Trainer(nn.Module):
             self.load_plans_file()
 
             self.process_plans(self.plans)
-            self.batch_size = 8
+            self.batch_size = 20
             self.aug_more = True
             self.use_adam = True
-            self.use_focal_loss = False
-            self.patch_size = np.array([32,128,128]).astype(int)
+            self.patch_size = np.array([24,128,128]).astype(int)
             self.do_data_augmentation = True
             self.num_classes = 2
             self.setup_data_aug_params()
-            self.initial_lr = 5e-3
+            self.initial_lr = 3.5e-3
             self.lr_scheduler_eps = 1e-3
-            self.lr_scheduler_patience = 2
+            self.lr_scheduler_patience = 4
             self.weight_decay = 2e-5
 
             self.oversample_foreground_percent = 0.5
@@ -140,24 +137,21 @@ class Trainer(nn.Module):
                                                                              'patch_size_for_spatialtransform'],
                                                                          self.data_aug_params)
 
-                if self.use_focal_loss:
-                    total = 0
-                    positive = 0
-                    for k in self.dataset_tr.keys():
-                        class_path = self.fc_path + '/classesTr'
-                        class_source = open(class_path + '/' + k + '.txt')  # 打开源文件
-                        indate = class_source.read()  # 显示所有源文件内容
-                        if int(indate) == 1:
-                            positive += 1
-                        total += 1
-                        positive_weight = positive / total
-                    self.class_loss = focal_loss(alpha=positive_weight)
-                else:
-                    self.class_loss = torch.nn.CrossEntropyLoss().cuda()
-                    #self.network = MTLN3D().cuda()
-            #self.network = VNet_class(num_classes=self.num_classes, deep_supervision=True).cuda()
-            self.network = Ensemble(num_classes=self.num_classes, deep_supervision=True).cuda()
-            #self.network = resnext50_32x4d(num_classes=self.num_classes).cuda()
+
+                total = 0
+                positive = 0
+                for k in self.dataset_tr.keys():
+                    class_path = self.fc_path + '/classesTr'
+                    class_source = open(class_path + '/' + k + '.txt')  # 打开源文件
+                    indate = class_source.read()  # 显示所有源文件内容
+                    if int(indate) == 1:
+                        positive += 1
+                    total += 1
+                    positive_weight = positive / total
+                self.class_loss = focal_loss(alpha=positive_weight)
+
+            #self.network = MTLN3D().cuda()
+            self.network = VNet_class(num_classes=self.num_classes, deep_supervision=True).cuda()
             #self.network = vgg11_bn(num_classes=self.num_classes, deep_supervision=True).cuda()
             if self.use_adam:
                 self.optimizer = torch.optim.Adam(self.network.parameters(), self.initial_lr,
@@ -521,7 +515,6 @@ class Trainer(nn.Module):
         self.online_eval_fp_class = np.sum(self.online_eval_fp_class, 0)
         self.online_eval_fn_class = np.sum(self.online_eval_fn_class, 0)
         self.online_eval_tn_class = np.sum(self.online_eval_tn_class, 0)
-        self.print_to_log_file("TP:", str(self.online_eval_tp_class),"\nTN:",str(self.online_eval_tn_class),"\nFP:",str(self.online_eval_fp_class),"\nFN:",str(self.online_eval_fn_class))
 
         global_acc_per_class = [i for i in [(i + h) / (i + j + k + h+ 1e-8) for i, j, k, h in
                                             zip(self.online_eval_tp_class, self.online_eval_fp_class,
@@ -548,19 +541,16 @@ class Trainer(nn.Module):
         self.online_eval_class_recall.append(np.mean(global_rec_per_class))
         self.online_eval_class_precision.append(np.mean(global_pre_per_class))
         self.online_eval_class_f1.append(global_f1_per_class)
-
         self.print_to_log_file("Val global acc per class:", str(global_acc_per_class))
         self.print_to_log_file("Val global pre per class:", str(global_pre_per_class))
         self.print_to_log_file("Val global rec per class:", str(global_rec_per_class))
         self.print_to_log_file("Val global f1 per class:", str(global_f1_per_class))
         self.print_to_log_file("do_more_augmentation:",str(self.aug_more))
         self.print_to_log_file("use_Adam:",str(self.use_adam))
-        self.print_to_log_file("use_focal_loss:",str(self.use_focal_loss))
-
         self.print_to_log_file("patch_size:",str(self.patch_size))
         self.print_to_log_file("initial_lr:",str(self.initial_lr))
         self.print_to_log_file("batchs_per_epoch:",str(self.num_batches_per_epoch))
-        self.print_to_log_file("Ensemble")
+
 
 
 
@@ -759,8 +749,8 @@ class Trainer(nn.Module):
             output_class_softmax = softmax_helper(output_class)
             output_class = output_class_softmax.argmax(1)
             target_class = target_class[:, 0]
-            #self.print_to_log_file("label  :",target_class)
-            #self.print_to_log_file("predict:",output_class)
+            self.print_to_log_file("label  :",target_class)
+            self.print_to_log_file("predict:",output_class)
             axes_class = tuple(range(1, len(target_class.shape)))
             tp_hard_class = torch.zeros((target_class.shape[0], num_classes0 - 1)).to(output_class.device.index)
             fp_hard_class = torch.zeros((target_class.shape[0], num_classes0 - 1)).to(output_class.device.index)
@@ -839,13 +829,7 @@ class Trainer(nn.Module):
                 break
 
             self.epoch += 1
-            if self.epoch % 10 == 0:
-                self.network.eval()
-                self.validate(epoch=self.epoch,save_softmax=False,validation_folder_name=self.valfolder)
-                #self.save_checkpoint(join(self.output_folder, 'epoch_{}_model_best.model'.format(self.epoch)))
             if self.epoch % 20 == 0:
-                #self.network.eval()
-                #self.validate(epoch=self.epoch,save_softmax=False,validation_folder_name=self.valfolder)
                 self.save_checkpoint(join(self.output_folder, 'epoch_{}_model_best.model'.format(self.epoch)))
             self.print_to_log_file("This epoch took %f s\n" % (epoch_end_time - epoch_start_time))
 
@@ -856,7 +840,7 @@ class Trainer(nn.Module):
         if isfile(join(self.output_folder, "model_latest.model.pkl")):
             os.remove(join(self.output_folder, "model_latest.model.pkl"))
 
-    def validate(self, epoch=0,do_mirroring: bool = True, use_sliding_window: bool = True,
+    def validate(self, do_mirroring: bool = True, use_sliding_window: bool = True,
                  step_size: float = 0.5, save_softmax: bool = True, use_gaussian: bool = True, overwrite: bool = True,
                  validation_folder_name: str = 'validation_raw', debug: bool = False, all_in_gpu: bool = False,
                  segmentation_export_kwargs: dict = None):
@@ -888,7 +872,7 @@ class Trainer(nn.Module):
             interpolation_order_z = segmentation_export_kwargs['interpolation_order_z']
 
         # predictions as they come from the network go here
-        output_folder = self.output_folder + "/%s_"%str(epoch) + validation_folder_name
+        output_folder = self.output_folder + "/" + validation_folder_name
         if not os.path.isdir(output_folder):
             os.makedirs(output_folder)
         # this is for debug purposes
