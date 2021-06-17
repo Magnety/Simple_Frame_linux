@@ -24,10 +24,10 @@ if __name__ == "__main__":
     This is the KiTS dataset after Nick fixed all the labels that had errors. Downloaded on Jan 6th 2020    
     """
 
-    base = "/home/ubuntu/liuyiyao/Simple_Frame_data/breast_data_153_noclsmask"
+    base = "/home/ubuntu/liuyiyao/Simple_Frame_data/breast_data_153_noclsmask_resample_out_spline"
 
-    task_id = 611
-    task_name = "Breast_c_noclsmask_153"
+    task_id = 116
+    task_name = "Breast_c_noclsmask_153_reample"
     foldername = "Task%03.0d_%s" % (task_id, task_name)
     out_base =  raw_data+"/"+foldername
     imagestr =  out_base+"/"+ "imagesTr"

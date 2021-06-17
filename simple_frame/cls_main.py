@@ -1,9 +1,8 @@
 import os
 import warnings
 import argparse
-
+import simple_frame
 import torch.cuda
-
 from simple_frame.training.cls_trainer import Trainer
 from simple_frame.utilities.task_name_id_conversion import convert_id_to_task_name
 from simple_frame.paths import *
@@ -31,8 +30,8 @@ if __name__ == '__main__':
     parser.add_argument("--npz", required=False, default=False, action="store_true",help="if set then tuframework will ")
     #print(torch.cuda.is_available())
 
-    sys.argv = ['main_cls.py','100','0']
-    os.environ["CUDA_VISIBLE_DEVICES"] = "1"
+    sys.argv = ['main_cls.py','116','2']
+    os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 
     args = parser.parse_args()
     data_root = args.data_root
@@ -56,7 +55,7 @@ if __name__ == '__main__':
         os.makedirs(str(out_checkpoints))
 
 #seg or cls
-    model_trainer = Trainer(fold,1, data_root, out_path, out_checkpoints,raw_path,val_folder)
+    model_trainer = simple_frame.training.cls_trainer.Trainer(fold, 1, data_root, out_path, out_checkpoints, raw_path, val_folder)
 
     #validate only
     #model_trainer.initialize(not validation_only)

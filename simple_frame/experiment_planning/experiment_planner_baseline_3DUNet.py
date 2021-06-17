@@ -335,7 +335,7 @@ class ExperimentPlanner(object):
         # removed training data based postprocessing. This is deprecated
 
         # these are independent of the stage
-        plans = {'num_stages': len(list(self.plans_per_stage.keys())), 'num_modalities': num_modalities,
+        plans = {'num_stages': 1, 'num_modalities': num_modalities,
                  'modalities': modalities, 'normalization_schemes': normalization_schemes,
                  'dataset_properties': self.dataset_properties, 'list_of_npz_files': self.list_of_cropped_npz_files,
                  'original_spacings': spacings, 'original_sizes': sizes,

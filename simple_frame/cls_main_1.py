@@ -31,8 +31,8 @@ if __name__ == '__main__':
     parser.add_argument("--npz", required=False, default=False, action="store_true",help="if set then tuframework will ")
     #print(torch.cuda.is_available())
 
-    sys.argv = ['main_cls.py','100','1']
-    os.environ["CUDA_VISIBLE_DEVICES"] = "2"
+    sys.argv = ['main_cls.py','611','1']
+    os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 
     args = parser.parse_args()
     data_root = args.data_root

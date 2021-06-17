@@ -50,7 +50,7 @@ class Trainer(nn.Module):
         self.batch_dice = False
         self.seg_loss = JI_and_Focal_loss({'batch_dice': self.batch_dice, 'smooth': 1e-5, 'do_bg': False, 'square': False})
         self.aw1 = AutomaticWeightedLoss(1)
-        self.fp16 = False
+        self.fp16 = True
         self.plans_file = data_root+"/Plansv2.1_plans_3D.pkl"
         self.fc_path = raw_path
         self.dataset_tr = self.dataset_val = None  # do not need to be used, they just appear if you are using the suggested load_dataset_and_do_split
@@ -65,17 +65,17 @@ class Trainer(nn.Module):
             self.load_plans_file()
 
             self.process_plans(self.plans)
-            self.batch_size = 8
-            self.aug_more = True
+            self.batch_size = 30
+            self.aug_more = False
             self.use_adam = True
-            self.use_focal_loss = False
+            self.use_focal_loss = True
             self.patch_size = np.array([32,128,128]).astype(int)
             self.do_data_augmentation = True
             self.num_classes = 2
             self.setup_data_aug_params()
-            self.initial_lr = 5e-3
+            self.initial_lr = 5e-4
             self.lr_scheduler_eps = 1e-3
-            self.lr_scheduler_patience = 2
+            self.lr_scheduler_patience = 4
             self.weight_decay = 2e-5
 
             self.oversample_foreground_percent = 0.5
@@ -91,7 +91,7 @@ class Trainer(nn.Module):
             self.save_latest_only = True
             self.max_num_epochs = 500
             self.num_batches_per_epoch = 400
-            self.num_val_batches_per_epoch = 200
+            self.num_val_batches_per_epoch = 100
             self.also_val_in_tr_mode = False
             self.lr_threshold = 1e-6  # the network will not terminate training if the lr is still above this threshold
 
@@ -150,13 +150,13 @@ class Trainer(nn.Module):
                         if int(indate) == 1:
                             positive += 1
                         total += 1
-                        positive_weight = positive / total
+                        positive_weight = (positive / total)
                     self.class_loss = focal_loss(alpha=positive_weight)
                 else:
                     self.class_loss = torch.nn.CrossEntropyLoss().cuda()
                     #self.network = MTLN3D().cuda()
-            #self.network = VNet_class(num_classes=self.num_classes, deep_supervision=True).cuda()
-            self.network = Ensemble(num_classes=self.num_classes, deep_supervision=True).cuda()
+            self.network = VNet_class(num_classes=self.num_classes, deep_supervision=True).cuda()
+            #self.network = Ensemble(num_classes=self.num_classes, deep_supervision=True).cuda()
             #self.network = resnext50_32x4d(num_classes=self.num_classes).cuda()
             #self.network = vgg11_bn(num_classes=self.num_classes, deep_supervision=True).cuda()
             if self.use_adam:
@@ -190,8 +190,11 @@ class Trainer(nn.Module):
                 self.print_to_log_file("Creating new 5-fold cross-validation split...")
                 splits = []
                 all_keys_sorted = np.sort(list(self.dataset.keys()))
-                test_idx = [[23, 30, 31, 42,  29, 36, 95], [7, 25, 34, 44, 49, 70, 91],
-                            [10, 26,  81, 96, 67, 86, 98], [14, 59, 80, 35, 45,60,101], [0,24, 41, 51, 78, 94]]
+                test_idx = [[1 ,5 ,6 ,11 ,12 ,18 ,22 ,27 ,28 ,29 ,30 ,31] ,
+                            [32 ,34 ,40 ,44 ,47 ,48 ,51 ,52 ,53 ,56 ,57 ],
+                            [58 ,59 ,63 ,68 ,70 ,74 ,81 ,84 ,85 ,90 ,96] ,
+                            [97 ,99 ,102 ,104 ,109 ,114 ,121 ,122 ,125 ,128 ,131 ],
+                            [134 ,137 ,138 ,139 ,140 ,141 ,142 ,143 ,147 ,149 ,152 ]]
                 import random
                 print(len(test_idx))
                 for i in range(len(test_idx)):
@@ -202,18 +205,22 @@ class Trainer(nn.Module):
                         if l != i:
                             test_tmp.extend(test_idx[l])
                     # print(test_tmp)
-                    for j in range(103):
+                    for j in range(153):
                         if j not in test_idx[i]:
                             train.append(j)
                     for k in train:
                         if k not in test_tmp:
                             test.append(k)
-                    if i < 2:
-                        test1 = random.sample(test, 14)
+                    if i < 1:
+                        test1 = random.sample(test, 19)
+                        # print(test1)
+                        test_idx[i].extend(test1)
+                    elif i < 3:
+                        test1 = random.sample(test, 20)
                         # print(test1)
                         test_idx[i].extend(test1)
                     else:
-                        test1 = random.sample(test, 13)
+                        test1 = random.sample(test, 19)
                         # print(test1)
                         test_idx[i].extend(test1)
                     test_idx[i].sort()
@@ -223,7 +230,7 @@ class Trainer(nn.Module):
                     train = []
                    # print(test_idx[i])
                    # print()
-                    for j in range(103):
+                    for j in range(153):
                         if j not in test_idx[i]:
                             #print(j)
                             train.append(j)
@@ -565,7 +572,7 @@ class Trainer(nn.Module):
         self.print_to_log_file("patch_size:",str(self.patch_size))
         self.print_to_log_file("initial_lr:",str(self.initial_lr))
         self.print_to_log_file("batchs_per_epoch:",str(self.num_batches_per_epoch))
-        self.print_to_log_file("Ensemble")
+        self.print_to_log_file("VNet_Class")
 
 
 
@@ -800,7 +807,7 @@ class Trainer(nn.Module):
         torch.cuda.manual_seed_all(12345)
         cudnn.deterministic = True
         torch.backends.cudnn.benchmark = False
-        #print("///////////run trainer1////////////////")
+        print("///////////run trainer1////////////////")
         if not self.was_initialized:
             #print("//////////////not initialized//////////////////")
             self.initialize(True)
