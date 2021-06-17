@@ -23,100 +23,144 @@ from simple_frame.network_architecture.generic_VNet import VNet_class
 from simple_frame.data_augmentation.data_augmentation import default_3D_augmentation_params, default_2D_augmentation_params, get_default_augmentation, get_patch_size
 from simple_frame.dataloading.dataset_load import load_dataset, DataLoader3D, unpack_dataset
 from simple_frame.loss_function.Loss_functions import JI_and_Focal_loss, AutomaticWeightedLoss, softmax_helper, sum_tensor
-
+from torch.cuda.amp import GradScaler, autocast
+from torch.optim.lr_scheduler import _LRScheduler
+from simple_frame.network_architecture.generic_VNet import VNet_recons
+from simple_frame.data_augmentation.data_augmentation import default_3D_augmentation_params, default_2D_augmentation_params, get_default_augmentation, get_patch_size
+from simple_frame.dataloading.dataset_load import load_dataset, DataLoader3D, unpack_dataset
+from simple_frame.loss_function.Loss_functions import JI_and_Focal_loss, AutomaticWeightedLoss, softmax_helper, sum_tensor
+from simple_frame.network_architecture.myVGG import vgg11_bn
+from simple_frame.network_architecture.myResNet import resnext50_32x4d
+from simple_frame.network_architecture.Ensemble import Ensemble
+from simple_frame.data_augmentation.data_augmentation_moreDA import get_moreDA_augmentation
 try:
     from apex import amp
 except ImportError:
     amp = None
 
 class Trainer(nn.Module):
-    def __init__(self, fold, data_root, out_path, output_fold):
+    def __init__(self, fold,stage, data_root, out_path, output_fold,raw_path,valfolder):
         super(Trainer, self).__init__()
         self.fold = fold
-        self.data_root = data_root
+        self.stage = stage
+        self.data_root = data_root + "/plans_v2.1_stage0"
         self.dataset_directory = out_path
         self.output_checkpoints = self.output_folder = output_fold
+        self.valfolder = valfolder
         self.was_initialized = False
         self.log_file = self.use_mask_for_norm = None
         self.batch_dice = False
         self.seg_loss = JI_and_Focal_loss({'batch_dice': self.batch_dice, 'smooth': 1e-5, 'do_bg': False, 'square': False})
-        self.class_loss = torch.nn.CrossEntropyLoss().cuda()
         self.aw1 = AutomaticWeightedLoss(1)
         self.fp16 = False
+        self.plans_file = data_root + "/Plansv2.1_plans_3D.pkl"
+        self.fc_path = raw_path
+        self.dataset_tr = self.dataset_val = None
+
 
     def initialize(self, training=True):
-        self.batch_size = 8
-        self.patch_size = np.array([32,128,128]).astype(int)
-        self.do_data_augmentation = True
-        self.num_classes = 2
-        self.setup_data_aug_params()
-        self.initial_lr = 5e-3
-        self.lr_scheduler_eps = 1e-3
-        self.lr_scheduler_patience = 10
-        self.weight_decay = 2e-5
+        if not self.was_initialized:
+            if not os.path.isdir(self.output_folder):
+                os.makedirs(self.output_folder)
 
-        self.oversample_foreground_percent = 0.33
-        self.pad_all_sides = None
+            self.load_plans_file()
 
-        self.patience = 50
-        self.val_eval_criterion_alpha = 0.9  # alpha * old + (1-alpha) * new
-        # if this is too low then the moving average will be too noisy and the training may terminate early. If it is
-        # too high the training will take forever
-        self.train_loss_MA_alpha = 0.93  # alpha * old + (1-alpha) * new
-        self.train_loss_MA_eps = 5e-4  # new MA must be at least this much better (smaller)
-        self.save_every = 50
-        self.save_latest_only = True
-        self.max_num_epochs = 1000
-        self.num_batches_per_epoch = 300
-        self.num_val_batches_per_epoch = 100
-        self.also_val_in_tr_mode = False
-        self.lr_threshold = 1e-6  # the network will not terminate training if the lr is still above this threshold
+            self.process_plans(self.plans)
+            self.batch_size = 8
+            self.aug_more = False
+            self.use_adam = True
+            self.use_focal_loss = True
+            self.patch_size = np.array([32, 128, 128]).astype(int)
+            self.do_data_augmentation = True
+            self.num_classes = 2
+            self.setup_data_aug_params()
+            self.initial_lr = 5e-4
+            self.lr_scheduler_eps = 1e-3
+            self.lr_scheduler_patience = 2
+            self.weight_decay = 2e-5
 
-        self.val_eval_criterion_MA = None
-        self.val_eval_criterion_MA_class = None
-        self.train_loss_MA = None
-        self.best_val_eval_criterion_MA = None
-        self.best_val_eval_criterion_MA_class = None
-        self.best_MA_tr_loss_for_patience = None
-        self.best_epoch_based_on_MA_tr_loss = None
-        self.all_tr_losses = []
-        self.all_val_losses = []
-        self.all_val_losses_tr_mode = []
-        self.all_val_eval_metrics = []  # does not have to be used
-        self.all_val_eval_metrics_dc =[]
+            self.oversample_foreground_percent = 0.5
+            self.pad_all_sides = None
 
-        self.epoch = 0
-        self.log_file = None
+            self.patience = 10
+            self.val_eval_criterion_alpha = 0.9  # alpha * old + (1-alpha) * new
+            # if this is too low then the moving average will be too noisy and the training may terminate early. If it is
+            # too high the training will take forever
+            self.train_loss_MA_alpha = 0.93  # alpha * old + (1-alpha) * new
+            self.train_loss_MA_eps = 5e-4  # new MA must be at least this much better (smaller)
+            self.save_every = 50
+            self.save_latest_only = True
+            self.max_num_epochs = 500
+            self.num_batches_per_epoch = 400
+            self.num_val_batches_per_epoch = 100
+            self.also_val_in_tr_mode = False
+            self.lr_threshold = 1e-6  # the network will not terminate training if the lr is still above this threshold
 
-        self.online_eval_foreground_dc = []
-        self.online_eval_tp = []
-        self.online_eval_fp = []
-        self.online_eval_fn = []
-        self.online_eval_foreground_acc = []
-        self.online_eval_tp_class = []
-        self.online_eval_fp_class = []
-        self.online_eval_fn_class = []
-        self.online_eval_tn_class = []
-        self.online_eval_class_precision = []
-        self.online_eval_class_recall = []
-        self.online_eval_class_f1 = []
+            self.val_eval_criterion_MA = None
+            self.val_eval_criterion_MA_class = None
+            self.train_loss_MA = None
+            self.best_val_eval_criterion_MA = None
+            self.best_val_eval_criterion_MA_class = None
+            self.best_MA_tr_loss_for_patience = None
+            self.best_epoch_based_on_MA_tr_loss = None
+            self.all_tr_losses = []
+            self.all_val_losses = []
+            self.all_val_losses_tr_mode = []
+            self.all_val_eval_metrics = []  # does not have to be used
+            self.epoch = 0
+            self.log_file = None
+            self.all_val_eval_metrics_dc =[]
+            self.online_eval_foreground_dc = []
+            self.online_eval_tp = []
+            self.online_eval_fp = []
+            self.online_eval_fn = []
 
-        if training:
-            self.train_data, self.val_data = self.get_data()
-            unpack_dataset(self.data_root)
-            self.train_data, self.val_data = get_default_augmentation(self.train_data, self.val_data,
-                                                                 self.data_aug_params[
-                                                                     'patch_size_for_spatialtransform'],
-                                                                 self.data_aug_params)
+            self.online_eval_foreground_acc = []
+            self.online_eval_tp_class = []
+            self.online_eval_fp_class = []
+            self.online_eval_fn_class = []
+            self.online_eval_tn_class = []
+            self.online_eval_class_precision = []
+            self.online_eval_class_recall = []
+            self.online_eval_class_f1 = []
+            self.all_val_eval_metrics_acc = []
+            self.all_val_eval_metrics_seg = []
+            if training:
+                self.train_data, self.val_data = self.get_data()
+                unpack_dataset(self.data_root)
+                if self.aug_more:
+                    self.train_data, self.val_data = get_moreDA_augmentation(self.train_data, self.val_data,
+                                                                             self.data_aug_params[
+                                                                                 'patch_size_for_spatialtransform'],
+                                                                             # [32,128,128]
+                                                                             self.data_aug_params,
 
-        #self.network = MTLN3D().cuda()
-        self.network = VNet_class(num_classes=self.num_classes, deep_supervision=True).cuda()
-        self.optimizer = torch.optim.Adam(self.network.parameters(), self.initial_lr, weight_decay=self.weight_decay,
-                                          amsgrad=True)
-        self.lr_scheduler = lr_scheduler.ReduceLROnPlateau(self.optimizer, mode='min', factor=0.2,
-                                                           patience=self.lr_scheduler_patience,
-                                                           verbose=True, threshold=self.lr_scheduler_eps,
-                                                           threshold_mode="abs")
+                                                                             use_nondetMultiThreadedAugmenter=False)
+                else:
+                    self.train_data, self.val_data = get_default_augmentation(self.train_data, self.val_data,
+                                                                              self.data_aug_params[
+                                                                                  'patch_size_for_spatialtransform'],
+                                                                              self.data_aug_params)
+
+
+            self.network = VNet_recons(num_classes=self.num_classes, deep_supervision=True).cuda()
+            #self.network = Ensemble(num_classes=self.num_classes, deep_supervision=True).cuda()
+            # self.network = resnext50_32x4d(num_classes=self.num_classes).cuda()
+            # self.network = vgg11_bn(num_classes=self.num_classes, deep_supervision=True).cuda()
+            if self.use_adam:
+                self.optimizer = torch.optim.Adam(self.network.parameters(), self.initial_lr,
+                                                  weight_decay=self.weight_decay, amsgrad=True)
+            else:
+                self.optimizer = torch.optim.SGD(self.network.parameters(), self.initial_lr, momentum=0.8,
+                                                 nesterov=True)
+
+            self.lr_scheduler = lr_scheduler.ReduceLROnPlateau(self.optimizer, mode='min', factor=0.8,
+                                                               patience=self.lr_scheduler_patience,
+                                                               verbose=True, threshold=self.lr_scheduler_eps,
+                                                               threshold_mode="abs")
+
+        else:
+            self.print_to_log_file('self.was_initialized is True, not running self.initialize again')
         self.was_initialized = True
 
     def do_split(self):
@@ -135,13 +179,69 @@ class Trainer(nn.Module):
                 self.print_to_log_file("Creating new 5-fold cross-validation split...")
                 splits = []
                 all_keys_sorted = np.sort(list(self.dataset.keys()))
-                kfold = KFold(n_splits=5, shuffle=True, random_state=12345)
+                test_idx = [[1, 5, 6, 11, 12, 18, 22, 27, 28, 29, 30, 31],
+                            [32, 34, 40, 44, 47, 48, 51, 52, 53, 56, 57],
+                            [58, 59, 63, 68, 70, 74, 81, 84, 85, 90, 96],
+                            [97, 99, 102, 104, 109, 114, 121, 122, 125, 128, 131],
+                            [134, 137, 138, 139, 140, 141, 142, 143, 147, 149, 152]]
+                import random
+                print(len(test_idx))
+                for i in range(len(test_idx)):
+                    train = []
+                    test = []
+                    test_tmp = []
+                    for l in range(len(test_idx)):
+                        if l != i:
+                            test_tmp.extend(test_idx[l])
+                    # print(test_tmp)
+                    for j in range(153):
+                        if j not in test_idx[i]:
+                            train.append(j)
+                    for k in train:
+                        if k not in test_tmp:
+                            test.append(k)
+                    if i < 1:
+                        test1 = random.sample(test, 19)
+                        # print(test1)
+                        test_idx[i].extend(test1)
+                    elif i < 3:
+                        test1 = random.sample(test, 20)
+                        # print(test1)
+                        test_idx[i].extend(test1)
+                    else:
+                        test1 = random.sample(test, 19)
+                        # print(test1)
+                        test_idx[i].extend(test1)
+                    test_idx[i].sort()
+                train_idx = []
+
+                for i in range(len(test_idx)):
+                    train = []
+                    # print(test_idx[i])
+                    # print()
+                    for j in range(153):
+                        if j not in test_idx[i]:
+                            # print(j)
+                            train.append(j)
+                    # print(train)
+                    train_idx.append(train)
+                    # print(train_idx)
+                print(train_idx)
+                print(test_idx)
+                for i in range(5):
+                    train_keys = np.array(all_keys_sorted)[train_idx[i]]
+                    test_keys = np.array(all_keys_sorted)[test_idx[i]]
+                    splits.append(OrderedDict())
+                    splits[-1]['train'] = train_keys
+                    splits[-1]['val'] = test_keys
+                """
+                kfold = KFold(n_splits=5, shuffle=True, random_state=19970916)
                 for i, (train_idx, test_idx) in enumerate(kfold.split(all_keys_sorted)):
                     train_keys = np.array(all_keys_sorted)[train_idx]
                     test_keys = np.array(all_keys_sorted)[test_idx]
                     splits.append(OrderedDict())
                     splits[-1]['train'] = train_keys
-                    splits[-1]['val'] = test_keys
+                    splits[-1]['val'] = test_keys"""
                 save_pickle(splits, splits_file)
 
             else:
@@ -172,10 +272,14 @@ class Trainer(nn.Module):
         tr_keys.sort()
         val_keys.sort()
         self.dataset_tr = OrderedDict()
+        print('////train name://///////')
         for i in tr_keys:
+            print(i)
             self.dataset_tr[i] = self.dataset[i]
         self.dataset_val = OrderedDict()
+        print('////val name://///////')
         for i in val_keys:
+            print(i)
             self.dataset_val[i] = self.dataset[i]
 
     def load_dataset(self):
@@ -186,11 +290,89 @@ class Trainer(nn.Module):
         self.do_split()
         dl_tr = DataLoader3D(self.dataset_tr, self.basic_generator_patch_size, self.patch_size, self.batch_size,
                              False, oversample_foreground_percent=self.oversample_foreground_percent,
-                             pad_mode="constant", pad_sides=self.pad_all_sides)
+                             pad_mode="constant", pad_sides=self.pad_all_sides, fc_path=self.fc_path)
+
         dl_val = DataLoader3D(self.dataset_val, self.patch_size, self.patch_size, self.batch_size, False,
                               oversample_foreground_percent=self.oversample_foreground_percent,
-                              pad_mode="constant", pad_sides=self.pad_all_sides)
+                              pad_mode="constant", pad_sides=self.pad_all_sides, fc_path=self.fc_path)
         return dl_tr, dl_val
+
+    def load_plans_file(self):
+        """
+        This is what actually configures the entire experiment. The plans file is generated by experiment planning
+        :return:
+        """
+        self.plans = load_pickle(self.plans_file)
+
+    def process_plans(self, plans):
+        if self.stage is None:
+            assert len(list(plans['plans_per_stage'].keys())) == 1, \
+                "If self.stage is None then there can be only one stage in the plans file. That seems to not be the " \
+                "case. Please specify which stage of the cascade must be trained"
+            self.stage = list(plans['plans_per_stage'].keys())[0]
+        self.plans = plans
+
+        stage_plans = self.plans['plans_per_stage'][self.stage]
+        # self.batch_size = stage_plans['batch_size']
+        # liuyiyao
+        self.batch_size = 12
+        self.net_pool_per_axis = stage_plans['num_pool_per_axis']
+        self.patch_size = np.array(stage_plans['patch_size']).astype(int)
+        self.do_dummy_2D_aug = stage_plans['do_dummy_2D_data_aug']
+
+        if 'pool_op_kernel_sizes' not in stage_plans.keys():
+            assert 'num_pool_per_axis' in stage_plans.keys()
+            self.print_to_log_file("WARNING! old plans file with missing pool_op_kernel_sizes. Attempting to fix it...")
+            self.net_num_pool_op_kernel_sizes = []
+            for i in range(max(self.net_pool_per_axis)):
+                curr = []
+                for j in self.net_pool_per_axis:
+                    if (max(self.net_pool_per_axis) - j) <= i:
+                        curr.append(2)
+                    else:
+                        curr.append(1)
+                self.net_num_pool_op_kernel_sizes.append(curr)
+        else:
+            self.net_num_pool_op_kernel_sizes = stage_plans['pool_op_kernel_sizes']
+
+        if 'conv_kernel_sizes' not in stage_plans.keys():
+            self.print_to_log_file("WARNING! old plans file with missing conv_kernel_sizes. Attempting to fix it...")
+            self.net_conv_kernel_sizes = [[3] * len(self.net_pool_per_axis)] * (max(self.net_pool_per_axis) + 1)
+        else:
+            self.net_conv_kernel_sizes = stage_plans['conv_kernel_sizes']
+
+        self.pad_all_sides = None  # self.patch_size
+        self.intensity_properties = plans['dataset_properties']['intensityproperties']
+        self.normalization_schemes = plans['normalization_schemes']
+        self.base_num_features = plans['base_num_features']
+        self.num_input_channels = plans['num_modalities']
+        self.num_classes = plans['num_classes'] + 1  # background is no longer in num_classes
+        self.classes = plans['all_classes']
+        self.use_mask_for_norm = plans['use_mask_for_norm']
+        self.only_keep_largest_connected_component = plans['keep_only_largest_region']
+        self.min_region_size_per_class = plans['min_region_size_per_class']
+        self.min_size_per_class = None  # DONT USE THIS. plans['min_size_per_class']
+
+        if plans.get('transpose_forward') is None or plans.get('transpose_backward') is None:
+            print("WARNING! You seem to have data that was preprocessed with a previous version of nnU-Net. "
+                  "You should rerun preprocessing. We will proceed and assume that both transpose_foward "
+                  "and transpose_backward are [0, 1, 2]. If that is not correct then weird things will happen!")
+            plans['transpose_forward'] = [0, 1, 2]
+            plans['transpose_backward'] = [0, 1, 2]
+        self.transpose_forward = plans['transpose_forward']
+        self.transpose_backward = plans['transpose_backward']
+
+        if len(self.patch_size) == 2:
+            self.threeD = False
+        elif len(self.patch_size) == 3:
+            self.threeD = True
+        else:
+            raise RuntimeError("invalid patch size in plans file: %s" % str(self.patch_size))
+
+        if "conv_per_stage" in plans.keys():  # this ha sbeen added to the plans only recently
+            self.conv_per_stage = plans['conv_per_stage']
+        else:
+            self.conv_per_stage = 2
 
     def print_to_log_file(self, *args, also_print_to_console=True, add_timestamp=True):
 
@@ -258,31 +440,41 @@ class Trainer(nn.Module):
         data = data_dict['data']
         target = data_dict['target']
         class_target = data_dict['class_label']
-        feature = data_dict['feature']
+        # liuyiyao no feature
+        # feature = data_dict['feature']
         if not isinstance(data, torch.Tensor):
             data = torch.from_numpy(data).float()
         if not isinstance(target, torch.Tensor):
             target = torch.from_numpy(target).float()
         if not isinstance(class_target, torch.Tensor):
             class_target = torch.from_numpy(class_target).float()
-        if not isinstance(feature, torch.Tensor):
-            feature = torch.from_numpy(feature).float()
+        # liuyiyao no feature
+
+        # if not isinstance(feature, torch.Tensor):
+        # feature = torch.from_numpy(feature).float()
         data = data.cuda(non_blocking=True)
         target = target.cuda(non_blocking=True)
-        class_target = class_target.cuda(non_blocking=True)
-        feature = feature.cuda(non_blocking=True)
-        self.optimizer.zero_grad()
-        output = self.network(data,feature)
 
-        #output = self.network(data)
+        class_target = class_target.cuda(non_blocking=True)
+        # liuyiyao no feature
+        # feature = feature.cuda(non_blocking=True)
+        self.optimizer.zero_grad()
+        # liuyiyao no feature
+        # output = self.network(data,feature)
+        output = self.network(data)
+        # print("///////////output///////////")
+        # print(output)
+        # output = self.network(data)
         del data
         l0 = self.seg_loss(output, target)
 
+        #l10 = self.class_loss(output, class_target.squeeze().long())
+
         l = self.aw1.cuda()(l0)
-        l = l0
+
         if run_online_evaluation:
-            #self.run_online_evaluation(output[2], output[3], target, class_target)
-            self.run_online_evaluation_onlycls(output,class_target)
+            # self.run_online_evaluation(output[2], output[3], target, class_target)
+            self.run_online_evaluation_onlyseg(output, target)
         del target
         if do_backprop:
             if not self.fp16 or amp is None:
@@ -293,6 +485,7 @@ class Trainer(nn.Module):
             self.optimizer.step()
 
         return l.detach().cpu().numpy()
+
     def update_train_loss_MA(self):
         if self.train_loss_MA is None:
             self.train_loss_MA = self.all_tr_losses[-1]
@@ -326,35 +519,6 @@ class Trainer(nn.Module):
             fname)
         self.print_to_log_file("done, saving took %.2f seconds" % (time.time() - start_time))
 
-    def finish_online_evaluation_onlyseg(self):
-        ###classification
-
-        # self.all_val_eval_metrics.append(np.mean(global_acc_per_class))
-
-
-        ###segmentation
-        self.online_eval_tp = np.sum(self.online_eval_tp, 0)
-        self.online_eval_fp = np.sum(self.online_eval_fp, 0)
-        self.online_eval_fn = np.sum(self.online_eval_fn, 0)
-
-        global_dc_per_class = [i for i in [2 * i / (2 * i + j + k) for i, j, k in
-                                           zip(self.online_eval_tp, self.online_eval_fp, self.online_eval_fn)]
-                               if not np.isnan(i)]
-
-
-
-        self.all_val_eval_metrics.append(np.mean(global_dc_per_class))
-        self.all_val_eval_metrics_dc.append(np.mean(global_dc_per_class))
-
-        self.print_to_log_file("Val global dc per class:", str(global_dc_per_class))
-
-        self.online_eval_foreground_dc = []
-        self.online_eval_tp = []
-        self.online_eval_fp = []
-        self.online_eval_fn = []
-
-
-
     def maybe_update_lr(self):
         # maybe update learning rate
         if self.lr_scheduler is not None:
@@ -362,32 +526,34 @@ class Trainer(nn.Module):
 
             if isinstance(self.lr_scheduler, lr_scheduler.ReduceLROnPlateau):
                 # lr scheduler is updated with moving average val loss. should be more robust
-                self.lr_scheduler.step(self.train_loss_MA)
+                self.lr_scheduler.step(
+                    self.train_loss_MA)  # liuyiyao                 self.lr_scheduler.step(self.train_loss_MA)#liuyiyao
+
             else:
                 self.lr_scheduler.step(self.epoch + 1)
         self.print_to_log_file("lr is now (scheduler) %s" % str(self.optimizer.param_groups[0]['lr']))
 
-    def load_best_checkpoint(self, train=True):
+    def load_best_checkpoint(self, train=True, epoch=100):
         if self.fold is None:
             raise RuntimeError("Cannot load best checkpoint if self.fold is None")
-        if isfile(self.output_folder+'/'+"model_best.model"):
-            self.load_checkpoint(self.output_folder+'/'+ "model_best.model", train=train)
+        if isfile(self.output_folder + '/' + "epoch_%s_model_best.model" % epoch):
+            self.load_checkpoint(self.output_folder + '/' + "epoch_%s_model_best.model" % epoch, train=train)
         else:
             self.print_to_log_file("WARNING! model_best.model does not exist! Cannot load best checkpoint. Falling "
                                    "back to load_latest_checkpoint")
             self.load_latest_checkpoint(train)
 
-    def load_latest_checkpoint(self, train=True):
-        if isfile(self.output_folder+'/'+"model_final_checkpoint.model"):
-            return self.load_checkpoint(self.output_folder+'/'+"model_final_checkpoint.model", train=train)
-        if isfile(self.output_folder+'/'+ "model_latest.model"):
-            return self.load_checkpoint(self.output_folder+'/'+ "model_latest.model", train=train)
-        if isfile(self.output_folder+'/'+ "model_best.model"):
+    def load_latest_checkpoint(self, train=True, epoch=100):
+        if isfile(self.output_folder + '/' + "model_final_checkpoint.model"):
+            return self.load_checkpoint(self.output_folder + '/' + "model_final_checkpoint.model", train=train)
+        if isfile(self.output_folder + '/' + "epoch_%s_model_best.model" % epoch):
+            return self.load_checkpoint(self.output_folder + '/' + "epoch_%s_model_best.model" % epoch, train=train)
+        if isfile(self.output_folder + '/' + "epoch_%s_model_best.model" % epoch):
             return self.load_best_checkpoint(train)
         raise RuntimeError("No checkpoint found")
 
     def load_final_checkpoint(self, train=False):
-        filename = self.output_folder+'/'+ "model_final_checkpoint.model"
+        filename = self.output_folder + '/' + "model_final_checkpoint.model"
         if not isfile(filename):
             raise RuntimeError("Final checkpoint not found. Expected: %s. Please finish the training first." % filename)
         return self.load_checkpoint(filename, train=train)
@@ -451,26 +617,17 @@ class Trainer(nn.Module):
 
             if self.best_val_eval_criterion_MA is None:
                 self.best_val_eval_criterion_MA = self.val_eval_criterion_MA
-                self.best_val_eval_criterion_MA_class = self.val_eval_criterion_MA_class
 
             # check if the current epoch is the best one according to moving average of validation criterion. If so
             # then save 'best' model
             # Do not use this for validation. This is intended for test set prediction only.
             self.print_to_log_file("current best_val_eval_criterion_MA is %.4f0" % self.best_val_eval_criterion_MA)
             self.print_to_log_file("current val_eval_criterion_MA is %.4f" % self.val_eval_criterion_MA)
-            self.print_to_log_file(
-                "current best_val_eval_criterion_MA_class is %.4f0" % self.best_val_eval_criterion_MA_class)
-            self.print_to_log_file("current val_eval_criterion_MA_class is %.4f" % self.val_eval_criterion_MA_class)
-
-            if self.val_eval_criterion_MA_class > self.best_val_eval_criterion_MA_class:
-                self.best_val_eval_criterion_MA_class = self.val_eval_criterion_MA_class
-                self.print_to_log_file("saving best classification epoch checkpoint...")
-                self.save_checkpoint(join(self.output_folder, "model_best_class.model"))
 
             if self.val_eval_criterion_MA > self.best_val_eval_criterion_MA:
                 self.best_val_eval_criterion_MA = self.val_eval_criterion_MA
                 self.print_to_log_file("saving best segmentation epoch checkpoint...")
-                self.save_checkpoint(join(self.output_folder, "model_best_seg.model"))
+                self.save_checkpoint(join(self.output_folder, "model_best_cls.model"))
 
             # Now see if the moving average of the train loss has improved. If yes then reset patience, else
             # increase patience
@@ -496,35 +653,9 @@ class Trainer(nn.Module):
 
         return continue_training
 
-    def plot_progress(self):
-        """
-        Should probably by improved
-        :return:
-        """
-        try:
-            font = {'weight': 'normal',
-                    'size': 18}
-            matplotlib.rc('font', **font)
-            fig = plt.figure(figsize=(30, 24))
-            ax = fig.add_subplot(111)
-            ax2 = ax.twinx()
-            x_values = list(range(self.epoch + 1))
-            ax.plot(x_values, self.all_tr_losses, color='b', ls='-', label="loss_tr")
-            ax.plot(x_values, self.all_val_losses, color='r', ls='-', label="loss_val, train=False")
-            if len(self.all_val_losses_tr_mode) > 0:
-                ax.plot(x_values, self.all_val_losses_tr_mode, color='g', ls='-', label="loss_val, train=True")
-            if len(self.all_val_eval_metrics_seg) == len(x_values):
-                ax2.plot(x_values, self.all_val_eval_metrics_dc, color='black', ls='--', label="dc")
-            ax.set_xlabel("epoch")
-            ax.set_ylabel("loss")
-            ax2.set_ylabel("evaluation metric")
-            ax.legend()
-            ax2.legend(loc=9)
 
-            fig.savefig(self.output_folder + "/" + "progress.png")
-            plt.close()
-        except IOError:
-            self.print_to_log_file("failed to plot: ", sys.exc_info())
+
+
     def on_epoch_end(self):
         self.finish_online_evaluation_onlyseg()  # does not have to do anything, but can be used to update self.all_val_eval_
         # metrics
@@ -539,31 +670,7 @@ class Trainer(nn.Module):
 
         continue_training = self.manage_patience()
         return continue_training
-    def run_online_evaluation_onlyseg(self, output, target):
-        with torch.no_grad():
-            ###classification
-            ###segmentation
-            num_classes = output.shape[1]
-            output_softmax = softmax_helper(output)
-            output_seg = output_softmax.argmax(1)
-            target = target[:, 0]
-            axes = tuple(range(1, len(target.shape)))
-            tp_hard = torch.zeros((target.shape[0], num_classes - 1)).to(output_seg.device.index)
-            fp_hard = torch.zeros((target.shape[0], num_classes - 1)).to(output_seg.device.index)
-            fn_hard = torch.zeros((target.shape[0], num_classes - 1)).to(output_seg.device.index)
-            for c in range(1, num_classes):
-                tp_hard[:, c - 1] = sum_tensor((output_seg == c).float() * (target == c).float(), axes=axes)
-                fp_hard[:, c - 1] = sum_tensor((output_seg == c).float() * (target != c).float(), axes=axes)
-                fn_hard[:, c - 1] = sum_tensor((output_seg != c).float() * (target == c).float(), axes=axes)
 
-            tp_hard = tp_hard.sum(0, keepdim=False).detach().cpu().numpy()
-            fp_hard = fp_hard.sum(0, keepdim=False).detach().cpu().numpy()
-            fn_hard = fn_hard.sum(0, keepdim=False).detach().cpu().numpy()
-
-            self.online_eval_foreground_dc.append(list((2 * tp_hard) / (2 * tp_hard + fp_hard + fn_hard + 1e-8)))
-            self.online_eval_tp.append(list(tp_hard))
-            self.online_eval_fp.append(list(fp_hard))
-            self.online_eval_fn.append(list(fn_hard))
 
 
     def run_trainer(self):
@@ -870,3 +977,154 @@ class Trainer(nn.Module):
                                       mixed_precision=mixed_precision)
         self.network.train(current_mode)
         return ret
+
+    def finish_online_evaluation_onlyseg(self):
+        ###classification
+
+        # self.all_val_eval_metrics.append(np.mean(global_acc_per_class))
+
+
+        ###segmentation
+        self.online_eval_tp = np.sum(self.online_eval_tp, 0)
+        self.online_eval_fp = np.sum(self.online_eval_fp, 0)
+        self.online_eval_fn = np.sum(self.online_eval_fn, 0)
+
+        global_dc_per_class = [i for i in [2 * i / (2 * i + j + k) for i, j, k in
+                                           zip(self.online_eval_tp, self.online_eval_fp, self.online_eval_fn)]
+                               if not np.isnan(i)]
+
+
+
+        self.all_val_eval_metrics.append(np.mean(global_dc_per_class))
+        self.all_val_eval_metrics_dc.append(np.mean(global_dc_per_class))
+
+        self.print_to_log_file("Val global dc per class:", str(global_dc_per_class))
+
+        self.online_eval_foreground_dc = []
+        self.online_eval_tp = []
+        self.online_eval_fp = []
+        self.online_eval_fn = []
+    def run_online_evaluation_onlyseg(self, output, target):
+        with torch.no_grad():
+            ###classification
+            ###segmentation
+            num_classes = output.shape[1]
+            output_softmax = softmax_helper(output)
+            output_seg = output_softmax.argmax(1)
+            target = target[:, 0]
+            axes = tuple(range(1, len(target.shape)))
+            tp_hard = torch.zeros((target.shape[0], num_classes - 1)).to(output_seg.device.index)
+            fp_hard = torch.zeros((target.shape[0], num_classes - 1)).to(output_seg.device.index)
+            fn_hard = torch.zeros((target.shape[0], num_classes - 1)).to(output_seg.device.index)
+            for c in range(1, num_classes):
+                tp_hard[:, c - 1] = sum_tensor((output_seg == c).float() * (target == c).float(), axes=axes)
+                fp_hard[:, c - 1] = sum_tensor((output_seg == c).float() * (target != c).float(), axes=axes)
+                fn_hard[:, c - 1] = sum_tensor((output_seg != c).float() * (target == c).float(), axes=axes)
+
+            tp_hard = tp_hard.sum(0, keepdim=False).detach().cpu().numpy()
+            fp_hard = fp_hard.sum(0, keepdim=False).detach().cpu().numpy()
+            fn_hard = fn_hard.sum(0, keepdim=False).detach().cpu().numpy()
+
+            self.online_eval_foreground_dc.append(list((2 * tp_hard) / (2 * tp_hard + fp_hard + fn_hard + 1e-8)))
+            self.online_eval_tp.append(list(tp_hard))
+            self.online_eval_fp.append(list(fp_hard))
+            self.online_eval_fn.append(list(fn_hard))
+    def plot_progress(self):
+        """
+        Should probably by improved
+        :return:
+        """
+        try:
+            font = {'weight': 'normal',
+                    'size': 18}
+            matplotlib.rc('font', **font)
+            fig = plt.figure(figsize=(30, 24))
+            ax = fig.add_subplot(111)
+            ax2 = ax.twinx()
+            x_values = list(range(self.epoch + 1))
+            ax.plot(x_values, self.all_tr_losses, color='b', ls='-', label="loss_tr")
+            ax.plot(x_values, self.all_val_losses, color='r', ls='-', label="loss_val, train=False")
+            if len(self.all_val_losses_tr_mode) > 0:
+                ax.plot(x_values, self.all_val_losses_tr_mode, color='g', ls='-', label="loss_val, train=True")
+            if len(self.all_val_eval_metrics_seg) == len(x_values):
+                ax2.plot(x_values, self.all_val_eval_metrics_dc, color='black', ls='--', label="dc")
+            ax.set_xlabel("epoch")
+            ax.set_ylabel("loss")
+            ax2.set_ylabel("evaluation metric")
+            ax.legend()
+            ax2.legend(loc=9)
+
+            fig.savefig(self.output_folder + "/" + "progress.png")
+            plt.close()
+        except IOError:
+            self.print_to_log_file("failed to plot: ", sys.exc_info())
+    def load_checkpoint_ram(self, checkpoint, train=True):
+        """
+        used for if the checkpoint is already in ram
+        :param checkpoint:
+        :param train:
+        :return:
+        """
+        if not self.was_initialized:
+            self.initialize(train)
+
+        new_state_dict = OrderedDict()
+        print("new_state_dict:", new_state_dict)
+
+        curr_state_dict_keys = list(self.network.state_dict().keys())
+        print("curr_state_dict_keys:", curr_state_dict_keys)
+
+        # if state dict comes form nn.DataParallel but we use non-parallel model here then the state dict keys do not
+        # match. Use heuristic to make it match
+        for k, value in checkpoint['state_dict'].items():
+            key = k
+            if key not in curr_state_dict_keys and key.startswith('module.'):
+                key = key[7:]
+            new_state_dict[key] = value
+
+        if self.fp16:
+            self._maybe_init_amp()
+            if 'amp_grad_scaler' in checkpoint.keys():
+                self.amp_grad_scaler.load_state_dict(checkpoint['amp_grad_scaler'])
+
+        self.network.load_state_dict(new_state_dict)
+        self.epoch = checkpoint['epoch']
+        if train:
+            optimizer_state_dict = checkpoint['optimizer_state_dict']
+            if optimizer_state_dict is not None:
+                self.optimizer.load_state_dict(optimizer_state_dict)
+
+            if self.lr_scheduler is not None and hasattr(self.lr_scheduler, 'load_state_dict') and checkpoint[
+                'lr_scheduler_state_dict'] is not None:
+                self.lr_scheduler.load_state_dict(checkpoint['lr_scheduler_state_dict'])
+
+            if issubclass(self.lr_scheduler.__class__, _LRScheduler):
+                self.lr_scheduler.step(self.epoch)
+
+        self.all_tr_losses, self.all_val_losses, self.all_val_losses_tr_mode, self.all_val_eval_metrics = checkpoint[
+            'plot_stuff']
+
+        # load best loss (if present)
+        if 'best_stuff' in checkpoint.keys():
+            self.best_epoch_based_on_MA_tr_loss, self.best_MA_tr_loss_for_patience, self.best_val_eval_criterion_MA = \
+            checkpoint[
+                'best_stuff']
+
+        # after the training is done, the epoch is incremented one more time in my old code. This results in
+        # self.epoch = 1001 for old trained models when the epoch is actually 1000. This causes issues because
+        # len(self.all_tr_losses) = 1000 and the plot function will fail. We can easily detect and correct that here
+        if self.epoch != len(self.all_tr_losses):
+            self.print_to_log_file("WARNING in loading checkpoint: self.epoch != len(self.all_tr_losses). This is "
+                                   "due to an old bug and should only appear when you are loading old models. New "
+                                   "models should have this fixed! self.epoch is now set to len(self.all_tr_losses)")
+            self.epoch = len(self.all_tr_losses)
+            self.all_tr_losses = self.all_tr_losses[:self.epoch]
+            self.all_val_losses = self.all_val_losses[:self.epoch]
+            self.all_val_losses_tr_mode = self.all_val_losses_tr_mode[:self.epoch]
+            self.all_val_eval_metrics = self.all_val_eval_metrics[:self.epoch]
+
+        self._maybe_init_amp()
+
+    def _maybe_init_amp(self):
+        if self.fp16 and self.amp_grad_scaler is None:
+            self.amp_grad_scaler = GradScaler()
